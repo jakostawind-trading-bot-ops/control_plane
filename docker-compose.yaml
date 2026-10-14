@@ -1,0 +1,15 @@
+services:
+  cp_server:
+    build: 
+      context: ./server
+      dockerfile: Dockerfile
+    expose:
+      - "8000"
+    init: true
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - control_plane_server
+    restart: unless-stopped

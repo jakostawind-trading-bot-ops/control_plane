@@ -1,0 +1,16 @@
+services:
+  cp_server:
+    build:
+      target: dev
+    env_file:
+      - ./server/.env.dev
+    volumes:
+      - ./server/src:/app/src
+    restart: "no"
+
+  caddy:
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
+    restart: "no"
