@@ -1,7 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
+)
 
 func main() {
-	fmt.Println("запущено приложение")
+	bootstrap_settings := internal.LoadBootstrapSettings()
+
+	fmt.Println(bootstrap_settings)
 }

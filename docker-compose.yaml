@@ -1,8 +1,9 @@
 services:
   cp_server:
-    build: 
+    build:
       context: ./server
       dockerfile: Dockerfile
+      target: runtime
     expose:
       - "8000"
     init: true
@@ -11,5 +12,5 @@ services:
   caddy:
     image: caddy:2-alpine
     depends_on:
-      - control_plane_server
+      - cp_server
     restart: unless-stopped
