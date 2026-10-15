@@ -3,19 +3,19 @@ package internal
 import "os"
 
 type BootstrapSettings struct {
-	stage string
+	Stage string
 
-	nats_url string
-	nats_user string
-	nats_password string
+	NatsUrl      string
+	NatsUser     string
+	NatsPassword string
 }
 
 func LoadBootstrapSettings() BootstrapSettings {
 	return BootstrapSettings{
-		stage: os.Getenv("STAGE"),
+		Stage: os.Getenv("STAGE"),
 
-		nats_url: os.Getenv("NATS_URL"),
-		nats_user: os.Getenv("NATS_USER"),
-		nats_password: os.Getenv("NATS_PASSWORD"),
+		NatsUrl:      os.Getenv("NATS_URL"),
+		NatsUser:     os.Getenv("NATS_USER"),
+		NatsPassword: os.Getenv("NATS_PASSWORD"),
 	}
 }

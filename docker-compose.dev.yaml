@@ -1,4 +1,4 @@
-name: dev
+name: dev_cp
 
 services:
   cp_server:
@@ -9,6 +9,8 @@ services:
     volumes:
       - ./server:/app
     restart: "no"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   caddy:
     ports:
@@ -16,3 +18,7 @@ services:
     volumes:
       - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
     restart: "no"
+
+networks:
+  default:
+    name: dev_cp
