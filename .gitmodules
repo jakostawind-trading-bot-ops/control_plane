@@ -1,0 +1,3 @@
+[submodule "server/internal/contracts/source"]
+	path = server/internal/contracts/source
+	url = https://github.com/jakostawind-trading-bot-ops/nats_contracts.git

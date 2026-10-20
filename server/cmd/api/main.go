@@ -1,23 +1,20 @@
 package main
 
 import (
-	"fmt"
-
+	"github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/shared/nats"
+	"go.uber.org/fx"
 )
 
 func main() {
-	BootstrapSettings := internal.LoadBootstrapSettings()
+	bootstrap_settings := internal.LoadBootstrapSettings()
 
-	// NATS
-	NatsClient := &nats.NatsClient{
-		BootstrapSettings: BootstrapSettings,
-	}
+	app := fx.New(
+		shared.BootstrapSettingsProvider(&bootstrap_settings), // настройки запуска
 
-	if err := nats.CreateConnection(NatsClient); err != nil {
-		fmt.Println(err)
-	}
+		fx.Provide(shared.NatsClientProvider),
+		fx.Invoke(func(ctx *shared.NatsClient) {}),
+	)
 
-	defer nats.CloseConnection(NatsClient)
+	app.Run()
 }
