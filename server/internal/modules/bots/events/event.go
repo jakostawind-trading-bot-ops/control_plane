@@ -1,22 +1,21 @@
 package events
 
-type BotEvent struct {
+type BaseBotEvent struct {
 	BotID     string
-	Message   BotEventMessage
+	Message   BaseBotEventMessage
 	Payload   map[string]any
 	Timestamp string
 }
 
-type BotEventMessage struct {
+type BaseBotEventMessage struct {
 	MsgID         string
 	CorrelationID string
-	MsgVersion    string
-	MsgType       string
-	MsgName       string
 }
 
-type BotEventI interface {
-	IsBotEvent()
+type BaseBotEventI interface {
+	IsBaseBotEvent() *BaseBotEvent
 }
 
-func (be *BotEvent) isBotEvent() {}
+func (BaseBotEvent *BaseBotEvent) IsBaseBotEvent() *BaseBotEvent {
+	return BaseBotEvent
+}

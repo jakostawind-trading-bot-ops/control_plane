@@ -3,10 +3,10 @@ package ports
 import (
 	"context"
 
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events"
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 )
 
 
 type BotEventDispatcherPort interface {
-	BotEventDispatch(ctx context.Context, e *events.BotEvent) error
+	DispatchBotEvent(ctx context.Context, BotEvent *events.BaseBotEventI) error
 }

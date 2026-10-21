@@ -1,4 +1,4 @@
-package shared
+package di_shared
 
 import (
 	"context"

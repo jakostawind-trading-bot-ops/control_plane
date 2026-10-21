@@ -2,9 +2,10 @@ package events
 
 import "context"
 
-type BotEventHandler interface {
+type BotEventHandlerI interface {
 	HandleBotEvent(
 		ctx context.Context,
-		event any,
+		BotEvent BaseBotEventI,
+		// todo: мб сюда надо будет передать общий интерфейс юзкейса
 	) error
 }

@@ -2,28 +2,19 @@ package ports
 
 import (
 	"context"
-	"reflect"
 
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events"
+	contracts_bot_control_v1_common "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/contracts/bot/control/v1/common"
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 )
 
-type BotEventRoutePort struct {
-	Contract reflect.Type
-	Event    events.BotEventI
+type BotEventRoute struct {
+	MessageType string
+	Contract    func() contracts_bot_control_v1_common.BaseBotEventContractV1I
+	BotEvent    func(
+		contract contracts_bot_control_v1_common.BaseBotEventContractV1I,
+	) (events.BaseBotEventI, error)
 }
 
-type BotEventRoutePortI interface{}
-
-
-
-type BotEventDecoderPort struct {
-	routes []BotEventRoutePort
+type BotEventDecoderPort interface {
+	BotEventDecode(ctx context.Context, MessageType string, RawMessage []byte) (events.BaseBotEventI, error)
 }
-
-type BotEventDecoderPortI interface {
-	Decode(
-		ctx context.Context,
-		routes []BotEventRoutePort,
-	)
-}
-

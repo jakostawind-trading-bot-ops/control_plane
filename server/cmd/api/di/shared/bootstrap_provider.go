@@ -1,4 +1,4 @@
-package shared
+package di_shared
 
 import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"

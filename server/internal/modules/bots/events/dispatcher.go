@@ -6,21 +6,17 @@ import (
 	"reflect"
 )
 
-type NatsBotEventDispatcher struct {
-	Handlers map[reflect.Type]BotEventHandler
+type BotEventDispatcher struct {
+	handlers map[reflect.Type]BotEventHandlerI
 }
 
-func (d *NatsBotEventDispatcher) BotEventDispatch(
-    ctx context.Context,
-    event BotEventI,
-) error {
-    handler, ok := d.Handlers[reflect.TypeOf(event)]
+func (BotEventDispatcher *BotEventDispatcher) DispatchBotEvent(ctx context.Context, BotEvent BaseBotEventI) error {
+    Handler, ok := BotEventDispatcher.handlers[reflect.TypeOf(BotEvent)]
+
     if !ok {
-        return fmt.Errorf(
-            "обработчик события %T не зарегистрирован",
-            event,
-        )
+        return fmt.Errorf("обработчик события %T не зарегистрирован", BotEvent)
     }
 
-    return handler.HandleBotEvent(ctx, event)
+    return Handler.HandleBotEvent(ctx, BotEvent)
+
 }
