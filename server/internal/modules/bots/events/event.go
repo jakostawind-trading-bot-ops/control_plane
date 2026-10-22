@@ -2,14 +2,8 @@ package events
 
 type BaseBotEvent struct {
 	BotID     string
-	Message   BaseBotEventMessage
-	Payload   map[string]any
+	Payload   map[any]any
 	Timestamp string
-}
-
-type BaseBotEventMessage struct {
-	MsgID         string
-	CorrelationID string
 }
 
 type BaseBotEventI interface {

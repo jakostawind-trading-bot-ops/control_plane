@@ -1,4 +1,4 @@
-package contracts_bot_control_v1_common
+package contracts_bot_control_v1
 
 import (
 	"fmt"
@@ -34,5 +34,5 @@ func (BaseBotEventContractV1 *BaseBotEventContractV1) Validate() error {
 		return fmt.Errorf("Timestamp обязателен")
 	}
 
-	return  nil
+	return nil
 }
