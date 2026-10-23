@@ -7,6 +7,7 @@ import (
 
 func BotEventDispatchRoutesRegistry() []ports.BotEventDispatchRoute {
 	return []ports.BotEventDispatchRoute{
+		// V1 : Lifecycle
 		dispatchroutes_v1.BotStartedEventV1DispatchRoute(),
 	}
 }
