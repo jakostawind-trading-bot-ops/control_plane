@@ -3,18 +3,38 @@ package ports
 import (
 	"context"
 
-	contracts_bot_control_v1 "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/contracts/bot/control/v1/common"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 )
 
-type BotEventRoute struct {
-	MessageType string
-	Contract    func() contracts_bot_control_v1.BaseBotEventContractV1I
-	BotEvent    func(
-		contract contracts_bot_control_v1.BaseBotEventContractV1I,
-	) (events.BaseBotEventI, error)
+// BotEventDecoderRoute связывает тип транспортного сообщения с функцией
+// преобразования в событие приложения. Конкретный контракт и его версия
+// известны функции Decode, поэтому общий тип маршрута от них не зависит.
+type BotEventDecoderRoute struct {
+	MessageType string // Ключ маршрута, включающий версию и тип транспортного сообщения.
+	// Decode — обязательная функция обработки RawMessage в формате своего контракта.
+	// На каждом вызове она разбирает и проверяет отдельное сообщение, затем
+	// возвращает внутреннее событие либо ошибку разбора, валидации или преобразования.
+	Decode func(RawMessage []byte) (events.BaseBotEventI, error)
 }
 
+// BotEventDecoderPort задаёт границу преобразования внешних сообщений бота
+// во внутренние события. Реализация выбирает и проверяет транспортный контракт;
+// вызывающий код получает событие без зависимости от версии этого контракта.
 type BotEventDecoderPort interface {
-	BotEventDecode(ctx context.Context, MessageType string, RawMessage []byte) (events.BaseBotEventI, error)
+	// BotEventDecode возвращает внутреннее событие из внешнего сообщения.
+	//
+	// Параметры:
+	//   - ctx — контекст обработки; поддержка отмены определяется реализацией.
+	//   - MessageType — тип сообщения с версией его транспортного контракта.
+	//   - RawMessage — исходные байты сообщения в формате выбранного контракта.
+	//
+	// Результаты:
+	//   - BaseBotEventI — внутреннее событие после проверки транспортного контракта.
+	//   - error — неизвестный тип сообщения либо ошибка разбора, валидации
+	//     или преобразования; при ошибке событие не возвращается.
+	BotEventDecode(
+		ctx context.Context,
+		MessageType string,
+		RawMessage []byte,
+	) (events.BaseBotEventI, error)
 }

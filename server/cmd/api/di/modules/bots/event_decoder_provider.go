@@ -6,15 +6,15 @@ import (
 )
 
 func BotEventDecoderProvider(
-	Routes []ports.BotEventRoute,
+	Routes []ports.BotEventDecoderRoute,
 ) ports.BotEventDecoderPort {
-	RouteMap := make(map[string]ports.BotEventRoute, len(Routes))
+	RouteMap := make(map[string]ports.BotEventDecoderRoute, len(Routes))
 
 	for _, Route := range Routes {
 		RouteMap[Route.MessageType] = Route
 	}
 
 	return &bots_nats.NatsBotEventDecoder{
-		BotEventRoutes: RouteMap,
+		BotEventDecoderRoutes: RouteMap,
 	}
 }

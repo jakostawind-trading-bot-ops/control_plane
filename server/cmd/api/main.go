@@ -5,7 +5,7 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
 	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/dispatch_routes"
-	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/event_routes"
+	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats/decoder_routes"
 	"go.uber.org/fx"
 )
 

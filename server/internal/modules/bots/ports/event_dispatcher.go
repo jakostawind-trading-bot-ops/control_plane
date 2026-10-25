@@ -12,5 +12,5 @@ type BotEventDispatchRoute struct {
 }
 
 type BotEventDispatcherPort interface {
-	DispatchBotEvent(ctx context.Context, BotEvent events.BaseBotEventI) error
+	BotEventDispatch(ctx context.Context, BotEvent events.BaseBotEventI) error
 }

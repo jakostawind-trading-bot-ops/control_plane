@@ -1,13 +1,12 @@
-package dispatchroutes
+package dispatch_routes
 
 import (
-	dispatchroutes_v1 "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/dispatch_routes/v1"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 )
 
 func BotEventDispatchRoutesRegistry() []ports.BotEventDispatchRoute {
 	return []ports.BotEventDispatchRoute{
-		// V1 : Lifecycle
-		dispatchroutes_v1.BotStartedEventV1DispatchRoute(),
+		// Lifecycle
+		BotStartedEventDispatchRoute(),
 	}
 }

@@ -1,4 +1,4 @@
-package events_lifecycle_v1
+package events_lifecycle
 
 import (
 	"context"
@@ -7,19 +7,19 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 )
 
-type BotStartedEventV1 struct {
+type BotStartedEvent struct {
 	events.BaseBotEvent
 }
 
-type BotStartedEventV1Handler struct{}
+type BotStartedEventHandler struct{}
 
-var _ events.BotEventHandlerI = (*BotStartedEventV1Handler)(nil)
+var _ events.BotEventHandlerI = (*BotStartedEventHandler)(nil)
 
-func (Handler *BotStartedEventV1Handler) HandleBotEvent(
+func (Handler *BotStartedEventHandler) HandleBotEvent(
 	ctx context.Context,
 	BotEvent events.BaseBotEventI,
 ) error {
 	// TODO: привести BotEvent к *BotStartedEventV1 и вызвать use case.
-	fmt.Println("BotStartedEventV1Handler отработал")
+	fmt.Println("BotStartedEventHandler отработал")
 	return nil
 }
