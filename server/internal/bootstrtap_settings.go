@@ -2,13 +2,16 @@ package internal
 
 import "os"
 
+// BootstrapSettings содержит настройки запуска из переменных окружения.
 type BootstrapSettings struct {
-	Stage        string
-	NatsUrl      string
-	NatsUser     string
-	NatsPassword string
+	Stage        string // Окружение приложения из STAGE.
+	NatsUrl      string // Адрес NATS из NATS_URL.
+	NatsUser     string // Имя пользователя NATS из NATS_USER.
+	NatsPassword string // Пароль NATS из NATS_PASSWORD; не предназначен для логов.
 }
 
+// LoadBootstrapSettings возвращает настройки из окружения без проверки значений.
+// Отсутствующая переменная даёт пустую строку; значения секретов не логируются.
 func LoadBootstrapSettings() BootstrapSettings {
 	return BootstrapSettings{
 		Stage:        os.Getenv("STAGE"),

@@ -69,7 +69,7 @@ func NatsClientProvider(
 	BootstrapSettings *internal.BootstrapSettings,
 ) *NatsClient {
 	// Этап 1: сохраняем собственную копию значений настроек для фонового клиента.
-	nats_client := &NatsClient{
+	NatsClient := &NatsClient{
 		BootstrapSettings: *BootstrapSettings,
 	}
 
@@ -77,18 +77,18 @@ func NatsClientProvider(
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
 			ctx, cancel := context.WithCancel(context.Background())
-			nats_client.cancel = cancel
-			nats_client.done = make(chan struct{})
-			go nats_client.run(ctx)
+			NatsClient.cancel = cancel
+			NatsClient.done = make(chan struct{})
+			go NatsClient.Run(ctx)
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
-			if nats_client.cancel == nil {
+			if NatsClient.cancel == nil {
 				return nil
 			}
-			nats_client.cancel()
+			NatsClient.cancel()
 			select {
-			case <-nats_client.done:
+			case <-NatsClient.done:
 				return nil
 			case <-ctx.Done():
 				return ctx.Err()
@@ -96,12 +96,12 @@ func NatsClientProvider(
 		},
 	})
 
-	return nats_client
+	return NatsClient
 }
 
-// run создаёт клиент NATS, наблюдает за его закрытием и повторяет создание.
-// Вызывается один раз из OnStart после инициализации c.done; при любом выходе
-// закрывает c.done, позволяя OnStop завершить ожидание.
+// Run создаёт клиент NATS, наблюдает за его закрытием и повторяет создание.
+// Вызывается один раз из OnStart после инициализации NatsClient.done; при любом выходе
+// закрывает NatsClient.done, позволяя OnStop завершить ожидание.
 //
 // Параметры:
 //   - ctx — контекст времени жизни клиента; должен быть ненулевым. Отмена
@@ -109,7 +109,7 @@ func NatsClientProvider(
 //     контекст не передаётся, поэтому текущий вызов Connect напрямую не отменяется.
 //
 // Побочные эффекты:
-// Создаёт сетевой клиент, обновляет c.natsClient и пишет события в log.
+// Создаёт сетевой клиент, обновляет NatsClient.natsClient и пишет события в log.
 // Ошибки создания, включая некорректный URL, логируются и повторяются до отмены.
 // NATS выполняет внутренние переподключения без ограничения числа попыток;
 // внешний цикл создаёт новый клиент только после ошибки Connect или ClosedHandler.
@@ -131,8 +131,8 @@ func NatsClientProvider(
 //	                                                  +-- closed -> Store(nil) -> [пауза 2 с]
 //	                                                  +-- отмена -> Close, Store(nil) -> выход
 //	[пауза 2 с] -> [следующая попытка либо выход при отмене]
-func (c *NatsClient) run(ctx context.Context) {
-	defer close(c.done)
+func (NatsClient *NatsClient) Run(ctx context.Context) {
+	defer close(NatsClient.done)
 	const retryDelay = 2 * time.Second
 
 	for ctx.Err() == nil {
@@ -140,8 +140,8 @@ func (c *NatsClient) run(ctx context.Context) {
 		// клиента от временного разрыва, который восстанавливает сама библиотека.
 		closed := make(chan struct{})
 		conn, err := nats.Connect(
-			c.BootstrapSettings.NatsUrl,
-			nats.UserInfo(c.BootstrapSettings.NatsUser, c.BootstrapSettings.NatsPassword),
+			NatsClient.BootstrapSettings.NatsUrl,
+			nats.UserInfo(NatsClient.BootstrapSettings.NatsUser, NatsClient.BootstrapSettings.NatsPassword),
 			nats.RetryOnFailedConnect(true),
 			nats.MaxReconnects(-1),
 			nats.ReconnectWait(retryDelay),
@@ -182,15 +182,15 @@ func (c *NatsClient) run(ctx context.Context) {
 				conn.Close()
 				return
 			}
-			c.natsClient.Store(conn)
+			NatsClient.natsClient.Store(conn)
 			log.Printf("NATS: клиент запущен, состояние: %s", conn.Status())
 			select {
 			case <-ctx.Done():
 				conn.Close()
-				c.natsClient.Store(nil)
+				NatsClient.natsClient.Store(nil)
 				return
 			case <-closed:
-				c.natsClient.Store(nil)
+				NatsClient.natsClient.Store(nil)
 			}
 		}
 
@@ -201,6 +201,38 @@ func (c *NatsClient) run(ctx context.Context) {
 			timer.Stop()
 			return
 		case <-timer.C:
+		}
+	}
+}
+
+// WaitConnection ждёт подключённый клиент, не создавая нового соединения.
+// ctx отменяет ожидание; результат — текущий *nats.Conn либо ctx.Err().
+// Соединение может разорваться сразу после возврата: вызывающий код должен
+// обрабатывать ошибки последующих операций.
+//
+// Схема:
+//
+//	[ctx активен?] -> [Клиент подключён?] -- да -> Conn
+//	       |                 |
+//	      нет               нет -> [Пауза 100 мс] -> повтор
+//	       v
+//	    ctx.Err()
+func (NatsClient *NatsClient) WaitConnection(ctx context.Context) (*nats.Conn, error) {
+	Ticker := time.NewTicker(100 * time.Millisecond)
+	defer Ticker.Stop()
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if Conn := NatsClient.natsClient.Load(); Conn != nil && Conn.IsConnected() {
+			return Conn, nil
+		}
+		// Ожидание очередной проверки прерывается отменой контекста.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-Ticker.C:
 		}
 	}
 }
