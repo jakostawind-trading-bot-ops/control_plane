@@ -4,6 +4,7 @@ import (
 	di_bots "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/modules/bots"
 	di_bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/modules/bots/nats"
 	"github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared"
+	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared/observability"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
 	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/dispatch_routes"
 	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats/decoder_routes"
@@ -16,7 +17,9 @@ func main() {
 	bootstrap_settings := internal.LoadBootstrapSettings()
 
 	app := fx.New(
-		di.BootstrapSettingsProvider(&bootstrap_settings), // настройки запуска
+		di.BootstrapSettingsProvider(&bootstrap_settings), // Настройки запуска
+
+		fx.Provide(di_observability.JSONLoggerProvider), // JSON логгер
 
 		fx.Provide(di.NatsClientProvider), // NatsClient
 

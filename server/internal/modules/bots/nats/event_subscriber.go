@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 	"github.com/nats-io/nats.go"
@@ -61,6 +63,7 @@ var (
 //	[Ack при успехе] <- [Dispatcher] <- [Decoder] <- [воркеры HandleMessage]
 //	Close -> [Drain подписки] -> [закрытие очереди] -> [ожидание воркеров]
 type NatsBotEventSubscriber struct {
+	Logger              *slog.Logger                 // Общий JSON-логгер из DI; обязателен для lifecycle и обработки сообщений.
 	Subscription        *nats.Subscription           // Подписка, сохраняемая Start; nil до первой успешной подписки.
 	Jetstream           nats.JetStreamContext        // Клиент JetStream, предоставляемый DI перед Start; соединением владеет внешний код.
 	StreamName          string                       // Имя существующего stream для nats.Bind.
@@ -92,7 +95,7 @@ type NatsBotEventSubscriber struct {
 //     errors.Join(CANNOT_SUBSCRIBE, err) при ошибке Subscribe; nil при успехе.
 //
 // Побочные эффекты:
-// Держит LifecycleMutex до возврата, сохраняет подписку и печатает сообщение
+// Держит LifecycleMutex до возврата, сохраняет подписку и логирует сообщение
 // об успешном запуске. Использует существующий consumer без его создания.
 // ManualAck оставляет подтверждение HandleMessage. При заполненной очереди
 // callback блокируется с RLock до освобождения места; закрытую очередь пропускает.
@@ -110,25 +113,33 @@ type NatsBotEventSubscriber struct {
 //	callback -> [RLock, очередь закрыта?] +-- да -> выход без Ack
 //	                                    +-- нет -> [отправка в очередь] -> RUnlock
 func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context) error {
+	Started := time.Now()
+	Logger := NatsBotEventSubscriber.Logger.With("operation", "start_bot_event_subscriber")
+	Logger.DebugContext(ctx, "Проверка состояния перед запуском подписки")
 	// Этап 1: проверки и создание подписки не должны пересекаться с началом Close.
 	NatsBotEventSubscriber.LifecycleMutex.Lock()
 	defer NatsBotEventSubscriber.LifecycleMutex.Unlock()
 
 	if NatsBotEventSubscriber.Closing {
+		Logger.DebugContext(ctx, "Запуск подписки отклонён: идёт остановка")
 		return IS_CLOSING
 	}
 	if !NatsBotEventSubscriber.WorkersStarted {
+		Logger.DebugContext(ctx, "Запуск подписки отклонён: воркеры не запущены")
 		return WORKERS_NOT_STARTED
 	}
 	if NatsBotEventSubscriber.Jetstream == nil {
+		Logger.DebugContext(ctx, "Запуск подписки отклонён: JetStream не задан")
 		return NATS_NOT_CONNECTED
 	}
 	if NatsBotEventSubscriber.Subscription != nil && NatsBotEventSubscriber.Subscription.IsValid() {
+		Logger.DebugContext(ctx, "Подписка уже действует")
 		return nil
 	}
 
 	// Этап 2: callback передаёт транспортное сообщение воркерам без декодирования.
 	Subject := NatsBotEventSubscriber.SubjectPrefix + ">"
+	Logger.DebugContext(ctx, "Создание подписки JetStream", "subject", Subject)
 
 	MessageQueue := NatsBotEventSubscriber.MessagesQueue
 	Subscription, err := NatsBotEventSubscriber.Jetstream.Subscribe(
@@ -138,8 +149,15 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			NatsBotEventSubscriber.MessageQueueMutex.RLock()
 			defer NatsBotEventSubscriber.MessageQueueMutex.RUnlock()
 			if NatsBotEventSubscriber.MessageQueueClosed {
+				NatsBotEventSubscriber.Logger.DebugContext(ctx, "Сообщение пропущено: очередь закрыта",
+					"operation", "enqueue_bot_event", "subject", Message.Subject,
+				)
 				return
 			}
+			NatsBotEventSubscriber.Logger.DebugContext(ctx, "Передача сообщения в очередь",
+				"operation", "enqueue_bot_event", "subject", Message.Subject,
+				"message_id", Message.Header.Get(nats.MsgIdHdr),
+			)
 			MessageQueue <- Message
 		},
 		nats.Bind(NatsBotEventSubscriber.StreamName, NatsBotEventSubscriber.ConsumerName),
@@ -148,11 +166,15 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 
 	// Этап 3: неудачная попытка сохраняет состояние для повторного Start.
 	if err != nil {
+		// Итоговую ошибку попытки пишет DI-провайдер, управляющий повторами.
+		Logger.DebugContext(ctx, "Попытка создания подписки завершилась ошибкой")
 		return errors.Join(CANNOT_SUBSCRIBE, err)
 	}
 
 	NatsBotEventSubscriber.Subscription = Subscription
-	fmt.Println("NatsBotEventSubscriber успешно запустился")
+	Logger.InfoContext(ctx, "Подписчик событий ботов запущен",
+		"subject", Subject, "duration_ms", time.Since(Started).Milliseconds(),
+	)
 
 	return nil
 }
@@ -168,10 +190,10 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 //     Data передаётся декодеру без изменений, Ack отправляет подтверждение.
 //
 // Побочные эффекты:
-// Вызывает обработчик через BotEventDispatcher и печатает ошибки в stdout,
-// не возвращая их воркеру. При ошибке до Ack выходит без Ack, Nak или Term;
+// Вызывает обработчик через BotEventDispatcher и логирует итог обработки,
+// не возвращая ошибки воркеру. При ошибке до Ack выходит без Ack, Nak или Term;
 // дальнейшую доставку определяет consumer. Ack вызывается без ожидания
-// подтверждения сервера; его ошибка только печатается. Дедупликации и отката
+// подтверждения сервера; его ошибка только логируется. Дедупликации и отката
 // побочных эффектов обработчика при ошибке Ack нет.
 //
 // Этапы:
@@ -186,44 +208,79 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 //	                 |                      |                       |
 //	               ошибка                 ошибка                  ошибка
 //	                 v                      v                       v
-//	            [печать, выход без Ack при любой из этих ошибок]
-//	[успех BotEventDispatch] -> [Ack] -> [при ошибке печать] -> выход
+//	            [лог, выход без Ack при любой из этих ошибок]
+//	[успех BotEventDispatch] -> [Ack] -> [ERROR при ошибке / INFO при успехе]
 func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	ctx context.Context,
 	Message *nats.Msg,
 ) {
+	Started := time.Now()
+	Logger := NatsBotEventSubscriber.Logger.With(
+		"operation", "handle_bot_event", "subject", Message.Subject,
+		"message_id", Message.Header.Get(nats.MsgIdHdr),
+	)
+	Logger.DebugContext(ctx, "Сообщение получено воркером", "payload_size", len(Message.Data))
 	// Этап 1: subject определяет транспортный тип вместе с версией контракта.
+	Logger.DebugContext(ctx, "Определение типа сообщения по subject")
 	MessageType, err := NatsBotEventSubscriber.GetMessageType(
 		ctx, Message.Subject,
 	)
 	if err != nil {
-		fmt.Printf("ошибка определения типа сообщения: %v\n", err)
+		Logger.WarnContext(ctx, "Сообщение отклонено: некорректный subject",
+			"error", err, "duration_ms", time.Since(Started).Milliseconds(),
+		)
 		return
 	}
+	Logger = Logger.With("message_type", MessageType)
 
 	// Этап 2: декодер отвечает за разбор контракта и создание внутреннего события.
+	Logger.DebugContext(ctx, "Передача сообщения декодеру")
 	BotEvent, err := NatsBotEventSubscriber.NatsBotEventDecoder.BotEventDecode(
 		ctx, MessageType, Message.Data,
 	)
 	if err != nil {
-		fmt.Printf("ошибка декодирования: %v\n", err)
+		if errors.Is(err, context.Canceled) {
+			Logger.DebugContext(ctx, "Декодирование сообщения отменено",
+				"error", context.Canceled, "duration_ms", time.Since(Started).Milliseconds(),
+			)
+		} else {
+			Logger.WarnContext(ctx, "Сообщение отклонено при декодировании",
+				"error", botEventDecodeErrorLogValue(err), "duration_ms", time.Since(Started).Milliseconds(),
+			)
+		}
 		return
 	}
+	Logger = Logger.With("event_type", fmt.Sprintf("%T", BotEvent))
 
 	// Этап 3: диспетчер выбирает обработчик по конкретному Go-типу события.
+	Logger.DebugContext(ctx, "Передача события диспетчеру")
 	err = NatsBotEventSubscriber.BotEventDispatcher.BotEventDispatch(
 		ctx, BotEvent,
 	)
 	if err != nil {
-		fmt.Printf("ошибка обработки события: %v\n", err)
+		if errors.Is(err, context.Canceled) {
+			Logger.DebugContext(ctx, "Обработка события отменена",
+				"error", err, "duration_ms", time.Since(Started).Milliseconds(),
+			)
+		} else {
+			Logger.ErrorContext(ctx, "Обработка события завершилась ошибкой",
+				"error", err, "duration_ms", time.Since(Started).Milliseconds(),
+			)
+		}
 		return
 	}
 
 	// Этап 4: успешная передача в очередь сама по себе не подтверждает обработку.
+	Logger.DebugContext(ctx, "Отправка подтверждения сообщения")
 	if err := Message.Ack(); err != nil {
-		fmt.Printf("ошибка подтверждения сообщения: %v\n", err)
+		Logger.ErrorContext(ctx, "Не удалось отправить подтверждение сообщения",
+			"error", err, "duration_ms", time.Since(Started).Milliseconds(),
+		)
+	} else {
+		Logger.InfoContext(ctx, "Сообщение обработано, Ack отправлен",
+			"duration_ms", time.Since(Started).Milliseconds(),
+		)
 	}
-
 }
 
 // GetMessageType возвращает тип события после префикса подписки.
@@ -306,8 +363,11 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	ctx context.Context,
 	Count int,
 ) error {
+	Logger := NatsBotEventSubscriber.Logger.With("operation", "create_bot_event_workers", "worker_count", Count)
+	Logger.DebugContext(ctx, "Проверка состояния перед запуском воркеров")
 	// Этап 1: проверка Count не требует блокировки, состояние пула защищает mutex.
 	if Count <= 0 {
+		Logger.ErrorContext(ctx, "Неверное количество воркеров", "error", INVALID_WORKER_COUNT)
 		return INVALID_WORKER_COUNT
 	}
 
@@ -315,12 +375,15 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	defer NatsBotEventSubscriber.LifecycleMutex.Unlock()
 
 	if NatsBotEventSubscriber.Closing {
+		Logger.DebugContext(ctx, "Запуск воркеров отклонён: идёт остановка")
 		return IS_CLOSING
 	}
 	if NatsBotEventSubscriber.WorkersStarted {
+		Logger.ErrorContext(ctx, "Повторный запуск воркеров отклонён", "error", WORKERS_ALREADY_STARTED)
 		return WORKERS_ALREADY_STARTED
 	}
 	if NatsBotEventSubscriber.MessagesQueue == nil {
+		Logger.ErrorContext(ctx, "Очередь сообщений не создана", "error", MESSAGE_QUEUE_NOT_CREATED)
 		return MESSAGE_QUEUE_NOT_CREATED
 	}
 
@@ -330,6 +393,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	NatsBotEventSubscriber.WorkersStarted = true
 
 	// Этап 3: все воркеры используют одну очередь и один контекст обработки.
+	Logger.DebugContext(ctx, "Запуск пула воркеров", "queue_capacity", cap(MessageQueue))
 	for i := 0; i < Count; i++ {
 		go func() {
 			defer NatsBotEventSubscriber.WorkersWG.Done()
@@ -340,6 +404,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 		}()
 	}
 
+	Logger.InfoContext(ctx, "Пул воркеров обработки событий запущен")
 	return nil
 }
 
@@ -387,6 +452,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 	ctx context.Context,
 ) error {
+	Logger := NatsBotEventSubscriber.Logger.With("operation", "close_bot_event_subscriber")
+	Logger.DebugContext(ctx, "Запрошена остановка подписчика")
 	// Этап 1: все вызовы получают общий сигнал, а очистка запускается только один раз.
 	NatsBotEventSubscriber.LifecycleMutex.Lock()
 
@@ -395,6 +462,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 		NatsBotEventSubscriber.CloseDone = make(chan struct{})
 		Subscription := NatsBotEventSubscriber.Subscription
 		MessagesQueue := NatsBotEventSubscriber.MessagesQueue
+		Started := time.Now()
 
 		go func() {
 			// Этап 4: сигнал завершения публикует CloseErr после выхода всех воркеров.
@@ -402,15 +470,19 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 
 			// Этап 2: подписываемся на статус до Drain, чтобы дождаться окончания callback.
 			if Subscription != nil {
+				Logger.DebugContext(ctx, "Остановка приёма сообщений через Drain")
 				Closed := NatsBotEventSubscriber.Subscription.StatusChanged(nats.SubscriptionClosed)
 				if err := Subscription.Drain(); err != nil {
 					NatsBotEventSubscriber.CloseErr = errors.Join(CLOSE_SUBSCRIPTION, err)
+					Logger.DebugContext(ctx, "Drain завершился ошибкой; остановка воркеров продолжается")
 				} else {
 					<-Closed
+					Logger.DebugContext(ctx, "Подписка JetStream закрыта")
 				}
 			}
 
 			// Этап 3: ждём текущих отправителей; будущие callback увидят запрет отправки.
+			Logger.DebugContext(ctx, "Закрытие очереди сообщений")
 			NatsBotEventSubscriber.MessageQueueMutex.Lock()
 			NatsBotEventSubscriber.MessageQueueClosed = true
 
@@ -419,8 +491,21 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 			}
 			NatsBotEventSubscriber.MessageQueueMutex.Unlock()
 			// Этап 4: range в воркерах дочитает буфер и завершится после закрытия канала.
+			Logger.DebugContext(ctx, "Ожидание завершения воркеров")
 			NatsBotEventSubscriber.WorkersWG.Wait()
+			// Очистка владеет итогом даже после отмены ожидающего вызова Close.
+			if NatsBotEventSubscriber.CloseErr != nil {
+				Logger.ErrorContext(ctx, "Остановка подписчика завершена с ошибкой",
+					"error", NatsBotEventSubscriber.CloseErr, "duration_ms", time.Since(Started).Milliseconds(),
+				)
+			} else {
+				Logger.InfoContext(ctx, "Подписчик событий ботов остановлен",
+					"duration_ms", time.Since(Started).Milliseconds(),
+				)
+			}
 		}()
+	} else {
+		Logger.DebugContext(ctx, "Остановка уже запрошена; ожидание общей очистки")
 	}
 
 	// Этап 5: ожидание не удерживает mutex и не блокирует другие вызовы Close.
@@ -431,6 +516,11 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 	case <-CloseDone:
 		return NatsBotEventSubscriber.CloseErr
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.Canceled) {
+			Logger.DebugContext(ctx, "Ожидание остановки отменено; очистка продолжается", "error", ctx.Err())
+		} else {
+			Logger.ErrorContext(ctx, "Истёк срок ожидания остановки; очистка продолжается", "error", ctx.Err())
+		}
 		return ctx.Err()
 	}
 }

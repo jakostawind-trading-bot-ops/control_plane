@@ -2,7 +2,7 @@ package di_bots
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats"
@@ -35,6 +35,7 @@ const (
 //     сообщения во внутреннее событие; вызывается воркерами подписчика.
 //   - Dispatcher — обязательный диспетчер: передаёт внутреннее событие
 //     зарегистрированному обработчику; вызывается после успешного декодирования.
+//   - Logger — общий JSON-логгер из JSONLoggerProvider для подписчика и ошибок запуска.
 //
 // Результаты:
 //   - BotEventSubscriberPort — указатель на NatsBotEventSubscriber с адресацией
@@ -88,9 +89,16 @@ func NatsBotEventSubscriberProvider(
 	GetJetStream BotEventJetStreamFactory,
 	Decoder ports.BotEventDecoderPort,
 	Dispatcher ports.BotEventDispatcherPort,
+	Logger *slog.Logger,
 ) ports.BotEventSubscriberPort {
 	// Этап 1: очередь принадлежит подписчику; Close закроет её после остановки приёма.
+	Logger = Logger.With(
+		"component", "bot_event_subscriber",
+		"stream", NATS_BOT_EVENT_STREAM,
+		"consumer", NATS_BOT_EVENT_CONSUMER,
+	)
 	Subscriber := &bots_nats.NatsBotEventSubscriber{
+		Logger:              Logger,
 		StreamName:          NATS_BOT_EVENT_STREAM,
 		ConsumerName:        NATS_BOT_EVENT_CONSUMER,
 		SubjectPrefix:       NATS_BOT_EVENT_SUBJECT_PREFIX,
@@ -130,7 +138,10 @@ func NatsBotEventSubscriberProvider(
 					if err == nil || SubscribeCtx.Err() != nil {
 						return
 					}
-					log.Printf("NATS: подписка на события ботов не создана: %v", err)
+					Logger.ErrorContext(SubscribeCtx, "Подписка на события ботов не создана",
+						"operation", "start_bot_event_subscriber", "error", err,
+						"retry_delay_ms", BOT_EVENT_RETRY_DELAY.Milliseconds(),
+					)
 
 					Timer := time.NewTimer(BOT_EVENT_RETRY_DELAY)
 					// Пауза ограничивает частоту ошибок и прерывается остановкой без ожидания 2 с.
