@@ -13,7 +13,7 @@ func JSONLoggerProvider(
 	lc fx.Lifecycle,
 	BootstrapSettings *internal.BootstrapSettings,
 ) (*slog.Logger, error) {
-	Logger := &logging.Logger{
+	Logger := &observability.Logger{
 		BootstrapSettings: *BootstrapSettings,
 	}
 

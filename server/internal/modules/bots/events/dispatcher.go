@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // BotEventDispatcher синхронно передаёт событие обработчику из реестра DI.
@@ -33,6 +36,13 @@ type BotEventDispatcher struct {
 //	                               +-- найден -> [HandleBotEvent] -> nil / error
 func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Context, BotEvent BaseBotEventI) error {
 	Logger := BotEventDispatcher.Logger.With("operation", "dispatch_bot_event", "event_type", fmt.Sprintf("%T", BotEvent))
+
+	Tracer := otel.Tracer(
+		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events",
+	)
+	ctx, span := Tracer.Start(ctx, "BotEventDispatcher.BotEventDispatch")
+	defer span.End()
+
 	// Этап 1: диспетчер работает с внутренним типом, а не версией транспортного контракта.
 	Logger.DebugContext(ctx, "Поиск обработчика события")
 	Handler, ok := BotEventDispatcher.Handlers[reflect.TypeOf(BotEvent)]
@@ -46,6 +56,8 @@ func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Conte
 	Logger.DebugContext(ctx, "Вызов обработчика события")
 	if err := Handler.HandleBotEvent(ctx, BotEvent); err != nil {
 		Logger.DebugContext(ctx, "Обработчик вернул ошибку")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Обработчик вернул ошибку")
 		return err
 	}
 	Logger.DebugContext(ctx, "Обработчик события завершён")

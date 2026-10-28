@@ -11,6 +11,7 @@ import (
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 	"github.com/nats-io/nats.go"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -215,15 +216,25 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	Message *nats.Msg,
 ) {
 	Started := time.Now()
+
+	Tracer := otel.Tracer( // Создание трейсера
+		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
+	)
+
+	ctx, span := Tracer.Start(ctx, "NatsBotEventSubscriber.HandleMessage")
+	defer span.End()
+
 	Logger := NatsBotEventSubscriber.Logger.With(
 		"operation", "handle_bot_event", "subject", Message.Subject,
 		"message_id", Message.Header.Get(nats.MsgIdHdr),
 	)
 	Logger.DebugContext(ctx, "Сообщение получено воркером", "payload_size", len(Message.Data))
+
 	// Этап 1: subject определяет транспортный тип вместе с версией контракта.
 	Logger.DebugContext(ctx, "Определение типа сообщения по subject")
 	MessageType, err := NatsBotEventSubscriber.GetMessageType(
-		ctx, Message.Subject,
+		ctx,
+		Message.Subject,
 	)
 	if err != nil {
 		Logger.WarnContext(ctx, "Сообщение отклонено: некорректный subject",
@@ -236,7 +247,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	// Этап 2: декодер отвечает за разбор контракта и создание внутреннего события.
 	Logger.DebugContext(ctx, "Передача сообщения декодеру")
 	BotEvent, err := NatsBotEventSubscriber.NatsBotEventDecoder.BotEventDecode(
-		ctx, MessageType, Message.Data,
+		ctx,
+		MessageType, Message.Data,
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -255,7 +267,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	// Этап 3: диспетчер выбирает обработчик по конкретному Go-типу события.
 	Logger.DebugContext(ctx, "Передача события диспетчеру")
 	err = NatsBotEventSubscriber.BotEventDispatcher.BotEventDispatch(
-		ctx, BotEvent,
+		ctx, 
+		BotEvent,
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -311,6 +324,13 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) GetMessageType(
 	ctx context.Context,
 	Subject string,
 ) (string, error) {
+
+	Tracer := otel.Tracer(
+		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
+	)
+	ctx, span := Tracer.Start(ctx, "NatsBotEventSubscriber.GetMessageType")
+	defer span.End()
+
 	// Этап 1: ограничение SplitN сохраняет тип с точками последним элементом.
 	PrefixTokens := strings.Split(strings.TrimSuffix(NatsBotEventSubscriber.SubjectPrefix, "."), ".")
 	SubjectTokens := strings.SplitN(Subject, ".", len(PrefixTokens)+1)

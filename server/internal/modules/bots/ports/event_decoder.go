@@ -14,7 +14,7 @@ type BotEventDecoderRoute struct {
 	// Decode — обязательная функция обработки RawMessage в формате своего контракта.
 	// На каждом вызове она разбирает и проверяет отдельное сообщение, затем
 	// возвращает внутреннее событие либо ошибку разбора, валидации или преобразования.
-	Decode func(RawMessage []byte) (events.BaseBotEventI, error)
+	Decode func(ctx context.Context, RawMessage []byte) (events.BaseBotEventI, error)
 }
 
 // BotEventDecoderPort задаёт границу преобразования внешних сообщений бота

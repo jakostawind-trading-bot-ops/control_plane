@@ -1,4 +1,4 @@
-package logging
+package observability
 
 import (
 	"fmt"

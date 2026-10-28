@@ -10,6 +10,7 @@ import (
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
+	"go.opentelemetry.io/otel"
 )
 
 // NatsBotEventDecoder выбирает декодер входящего сообщения по его типу.
@@ -53,6 +54,14 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	RawMessage []byte,
 ) (events.BaseBotEventI, error) {
 	Logger := NatsBotEventDecoder.Logger.With("operation", "decode_bot_event", "message_type", MessageType)
+
+	Tracer := otel.Tracer(
+		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
+	)
+
+	ctx, span := Tracer.Start(ctx, "NatsBotEventDecoder.BotEventDecode")
+	defer span.End()
+
 	// Этап 1: выбираем маршрут конкретного типа и версии сообщения.
 	Logger.DebugContext(ctx, "Поиск маршрута декодирования", "payload_size", len(RawMessage))
 	Route, ok := NatsBotEventDecoder.BotEventDecoderRoutes[MessageType]
@@ -63,7 +72,7 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 
 	// Этап 2: маршрут разбирает, проверяет и преобразует свой контракт.
 	Logger.DebugContext(ctx, "Декодирование и валидация контракта")
-	BotEvent, err := Route.Decode(RawMessage)
+	BotEvent, err := Route.Decode(ctx ,RawMessage)
 	if err != nil {
 		Logger.DebugContext(ctx, "Контракт не декодирован")
 		return nil, fmt.Errorf(

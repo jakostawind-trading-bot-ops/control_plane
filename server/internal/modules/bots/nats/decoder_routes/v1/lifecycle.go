@@ -1,6 +1,7 @@
 package decoder_routes_v1
 
 import (
+	"context"
 	"encoding/json/v2"
 	"fmt"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 	events_lifecycle "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/events/lifecycle"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
+	"go.opentelemetry.io/otel"
 )
 
 // BotStartedEventV1DecoderRoute возвращает маршрут сообщения о запуске бота
@@ -31,7 +33,15 @@ import (
 func BotStartedEventV1DecoderRoute() ports.BotEventDecoderRoute {
 	return ports.BotEventDecoderRoute{
 		MessageType: "v1.lifecycle.bot_started_event",
-		Decode: func(RawMessage []byte) (events.BaseBotEventI, error) {
+		Decode: func(ctx context.Context, RawMessage []byte) (events.BaseBotEventI, error) {
+
+			Tracer := otel.Tracer(
+				"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats/decoder_routes/v1/decoder_routes_v1",
+			)
+
+			ctx, span := Tracer.Start(ctx, "BotStartedEventV1DecoderRoute.Decode")
+			defer span.End()
+
 			// Этап 1: отдельный контракт исключает перенос данных между сообщениями.
 			Contract := &lifecyclecontracts.BotStartedEventContractV1{}
 			if err := json.Unmarshal(RawMessage, Contract); err != nil {
