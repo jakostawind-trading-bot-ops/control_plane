@@ -441,6 +441,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	Count int,
 ) error {
 
+	WorkerCtx := ctx // Сохраняем исходный ctx, чтобы сообщения не наследовали общий span запуска воркеров.
+
 	Tracer := otel.Tracer(
 		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
 	)
@@ -498,7 +500,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 			defer NatsBotEventSubscriber.WorkersWG.Done()
 
 			for Message := range MessageQueue {
-				NatsBotEventSubscriber.HandleMessage(ctx, Message)
+				NatsBotEventSubscriber.HandleMessage(WorkerCtx, Message)
 			}
 		}()
 	}

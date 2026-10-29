@@ -26,6 +26,10 @@
                 {
                     "text": "5. Средний приоритет: настройки запуска не проверяются.\n   LoadBootstrapSettings:12 (server/internal/bootstrtap_settings.go:12) принимает пустые значения. При отсутствующем NATS_URL клиент использует localhost, скрывая причину ошибки конфигурации. В базовом docker-compose.yaml:2 (docker-compose.yaml:2) переменные вообще не передаются — они настроены только в dev override. Нужно валидировать обязательные настройки до подключения и определить конфигурацию обычного запуска.",
                     "id": "jn5l7nq1ry3pny9gmfbgbe6d"
+                },
+                {
+                    "text": "- Продолжение trace отправителя отсутствует. Из NATS-заголовков не извлекается OpenTelemetry-контекст. Если бот передаёт traceparent/tracestate, сервер пока их игнорирует. Это отдельный механизм от ручного логирования заголовков.",
+                    "id": "ly0kp9adosg1hsol9a9v5eso"
                 }
             ],
             "id": "pbcwndetrnks0z0lbk1iva0x",
@@ -99,5 +103,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793315219407
+    "timestamp": 1793316501191
 }
