@@ -1,0 +1,103 @@
+{
+    "title": "Kanban",
+    "cols": [
+        {
+            "title": "Bugs",
+            "tasks": [
+                {
+                    "text": "4. NatsClient.Run может создать новый *nats.Conn после окончательного закрытия предыдущего. Существующие JetStream и подписка автоматически на новый объект не переключатся. Обычное переподключение внутри того же *nats.Conn — другой случай.\n",
+                    "id": "yht1cfxg1jopwxvuxupenqfz"
+                },
+                {
+                    "text": " после неудачного Subscribe подписка сама не появится. Нужен фоновый механизм повторов, который также узнаёт о замене соединения в провайдере.",
+                    "id": "sc2fujmhoekgo4u8m5sdqj0t"
+                }
+            ],
+            "id": "gj1tb4yyedsn73h7is81a4vd",
+            "color": "#eb144c"
+        },
+        {
+            "title": "Plan",
+            "tasks": [
+                {
+                    "text": "6. Средний приоритет: две команды Makefile используют несуществующий сервис.\n   В Makefile:5 (Makefile:5) задан SERVICE ?= control_plane_server, а Compose объявляет cp_server. Поэтому make dev-logs и make dev-shell без переопределения SERVICE не работают. Исправление — согласовать название.",
+                    "id": "tuw18feal807hxxy8916o14n"
+                },
+                {
+                    "text": "5. Средний приоритет: настройки запуска не проверяются.\n   LoadBootstrapSettings:12 (server/internal/bootstrtap_settings.go:12) принимает пустые значения. При отсутствующем NATS_URL клиент использует localhost, скрывая причину ошибки конфигурации. В базовом docker-compose.yaml:2 (docker-compose.yaml:2) переменные вообще не передаются — они настроены только в dev override. Нужно валидировать обязательные настройки до подключения и определить конфигурацию обычного запуска.",
+                    "id": "jn5l7nq1ry3pny9gmfbgbe6d"
+                }
+            ],
+            "id": "pbcwndetrnks0z0lbk1iva0x",
+            "color": "var(--vscode-editor-foreground)"
+        },
+        {
+            "title": "To-Do",
+            "tasks": [
+                {
+                    "text": "прокинуть trace в BotEventHandler",
+                    "id": "xlxxhozt6fpgprfz43ecy40z"
+                },
+                {
+                    "text": "исправить логгер, он должен принимать sapn из контекста как вложенные данные наверное типа:\nobservability:\n - TraceID\n - Span",
+                    "id": "dou8cs9jlhqgr06yp1l6lnlv"
+                },
+                {
+                    "text": "добавть везде \nspan.RecordError(err)\nspan.SetStatus(codes.Error\n",
+                    "id": "slyeg4durmrai4pnf13ep4x7"
+                },
+                {
+                    "text": "надо бы передать из  ctx decoder информацию из хедерс натса в ctx subscriber чтобы передать инфу в ctx dispatcher",
+                    "id": "deh5wn01ppbuvu3hi9oyvuln"
+                },
+                {
+                    "text": "перейти на fastjson либу",
+                    "id": "e4vj738bemh1g1newwt0yoc1"
+                }
+            ],
+            "id": "n9rn5sra3sf321zovkiq2c7j",
+            "color": "#fcb900"
+        },
+        {
+            "title": "Doing",
+            "tasks": [
+                {
+                    "text": "di:\n-  [x] event_decoder_provider\n-  [x] event_dispatcher_provider\n-  [x] subscriber_provider\n-  [x] bot_event_jetstream_provider\n- command_publisher_provider\n\n ",
+                    "id": "g6d2ncnc7js5uxs7q6u629nd"
+                }
+            ],
+            "id": "z6l6dxcvw5uo5ida4089hf5z",
+            "color": "#0693e3"
+        },
+        {
+            "title": "Done",
+            "tasks": [
+                {
+                    "text": "роутеры для Contract -> BotEvent",
+                    "id": "ixvdsffiytlxn17yfkcub6hg"
+                },
+                {
+                    "text": "4. Высокий приоритет: после длительного отключения NATS процесс может остаться работающим без связи навсегда.\n   В nats_client.go:28 (server/cmd/api/di/shared/nats_client.go:28) нет обработки окончательного закрытия соединения. По умолчанию NATS Go ограничивает переподключения 60 попытками на сервер; после исчерпания соединение закрывается. Приложение продолжит ждать сигнал завершения, поэтому Docker restart policy его не восстановит. Нужна явная политика восстановления либо завершение процесса через fx.Shutdowner, плюс отражение состояния соединения в readiness.",
+                    "id": "y7l83w3gf5y9yoxx1v65d2b9"
+                },
+                {
+                    "text": "опентелеметри добавить",
+                    "id": "vscjac3grm2h7cf35ig7m85a"
+                },
+                {
+                    "text": "сабскрайдер ивентов ботов",
+                    "id": "j5ttnv2zs7pv038sy863c35h"
+                },
+                {
+                    "text": "Общий порт привязан к версии транспортного контракта. BotEventRoute:10 (server/internal/modules/bots/ports/event_decoder.go:10) зависит от BaseBotEventContractV1I. При добавлении v2 придётся менять общую границу. Лучше оставить преобразование версий внутри транспортного адаптера.",
+                    "id": "u7sluaq0f7rac7czjsz7imk2"
+                }
+            ],
+            "id": "mjiqnc7tnrarpumjh9vca4e5",
+            "color": "#00d084"
+        }
+    ],
+    "autosave": true,
+    "saveToFile": true,
+    "timestamp": 1793306128901
+}
