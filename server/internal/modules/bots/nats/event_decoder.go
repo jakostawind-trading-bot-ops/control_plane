@@ -53,7 +53,10 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	MessageType string,
 	RawMessage []byte,
 ) (events.BaseBotEventI, error) {
-	Logger := NatsBotEventDecoder.Logger.With("operation", "decode_bot_event", "message_type", MessageType)
+	Logger := NatsBotEventDecoder.Logger.With(
+		"operation", "decode_bot_event",
+		"message_type", MessageType,
+	)
 
 	Tracer := otel.Tracer(
 		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
@@ -72,7 +75,7 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 
 	// Этап 2: маршрут разбирает, проверяет и преобразует свой контракт.
 	Logger.DebugContext(ctx, "Декодирование и валидация контракта")
-	BotEvent, err := Route.Decode(ctx ,RawMessage)
+	BotEvent, err := Route.Decode(ctx, RawMessage)
 	if err != nil {
 		Logger.DebugContext(ctx, "Контракт не декодирован")
 		return nil, fmt.Errorf(
