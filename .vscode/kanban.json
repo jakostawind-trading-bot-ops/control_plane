@@ -58,10 +58,6 @@
             "title": "Doing",
             "tasks": [
                 {
-                    "text": "если сообщеие в натсе имеет инвалидный сабждект или тело, сабскрайюбер пытается бесконечно прочитать это сообщение",
-                    "id": "ex23h4l8q2xg07i78reqxl0m"
-                },
-                {
                     "text": "di:\n-  [x] event_decoder_provider\n-  [x] event_dispatcher_provider\n-  [x] subscriber_provider\n-  [x] bot_event_jetstream_provider\n- command_publisher_provider\n\n ",
                     "id": "g6d2ncnc7js5uxs7q6u629nd"
                 }
@@ -72,6 +68,10 @@
         {
             "title": "Done",
             "tasks": [
+                {
+                    "text": "если сообщеие в натсе имеет инвалидный сабждект или тело, сабскрайюбер пытается бесконечно прочитать это сообщение",
+                    "id": "ex23h4l8q2xg07i78reqxl0m"
+                },
                 {
                     "text": "исправить логгер, он должен принимать sapn из контекста как вложенные данные наверное типа:\nobservability:\n - TraceID\n - Span",
                     "id": "dou8cs9jlhqgr06yp1l6lnlv"
@@ -103,5 +103,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793396819824
+    "timestamp": 1793402730149
 }

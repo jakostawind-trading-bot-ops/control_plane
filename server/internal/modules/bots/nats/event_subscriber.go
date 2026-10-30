@@ -305,6 +305,12 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 				"error", botEventDecodeErrorLogValue(err),
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			if termErr := Message.Term(); termErr != nil { // Term сообщения
+				Logger.ErrorContext(
+					ctx, "Не удалось прекратить повторную доставку сообщения",
+					"error", termErr,
+				)
+			}
 		}
 		return
 	}
@@ -329,6 +335,12 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 				"error", err, "duration_ms",
 				time.Since(Started).Milliseconds(),
 			)
+			if termErr := Message.Term(); termErr != nil {
+				Logger.ErrorContext(
+					ctx, "Не удалось прекратить повторную доставку сообщения",
+					"error", termErr,
+				)
+			}
 		}
 		return
 	}
