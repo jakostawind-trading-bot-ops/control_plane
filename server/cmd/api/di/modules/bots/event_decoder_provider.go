@@ -7,8 +7,8 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 )
 
-// BotEventDecoderProvider собирает декодер из Routes и общего JSON-логгера Logger.
-// Возвращает порт декодирования; Logger должен быть создан JSONLoggerProvider.
+// BotEventDecoderProvider собирает декодер из Routes и общего OTel-логгера Logger.
+// Возвращает порт декодирования; Logger должен быть создан LoggerProvider.
 func BotEventDecoderProvider(
 	Routes []ports.BotEventDecoderRoute,
 	Logger *slog.Logger,

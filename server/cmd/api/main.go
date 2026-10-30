@@ -20,8 +20,8 @@ func main() {
 	app := fx.New(
 		di.BootstrapSettingsProvider(&bootstrap_settings), // Настройки запуска
 
-		fx.Provide(di_observability.JSONLoggerProvider), // JSON логгер
-		fx.Provide(di_observability.TracerProvider),     // OpenTelemetry tracing
+		fx.Provide(di_observability.LoggerProvider), // OpenTelemetry logs
+		fx.Provide(di_observability.TracerProvider), // OpenTelemetry tracing
 
 		fx.Provide(di.NatsClientProvider), // NatsClient
 

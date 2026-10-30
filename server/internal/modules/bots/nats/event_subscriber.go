@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
-	observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/logging"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
 )
@@ -126,7 +125,6 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 
 	Logger := NatsBotEventSubscriber.Logger.With(
 		"operation", "start_bot_event_subscriber",
-		observability.TraceFields(ctx, observability.TraceID, observability.SpanID),
 	)
 
 	Logger.DebugContext(ctx, "Проверка состояния перед запуском подписки")
@@ -266,7 +264,6 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 		"operation", "handle_bot_event",
 		"subject", Message.Subject,
 		//  ! "message_id", Message.Header.Get(nats.MsgIdHdr),
-		observability.TraceFields(ctx, observability.TraceID, observability.SpanID),
 	)
 	Logger.DebugContext(
 		ctx, "Сообщение получено воркером",
@@ -298,7 +295,6 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			Logger.DebugContext(
-
 				ctx, "Декодирование сообщения отменено",
 				"error", context.Canceled,
 				"duration_ms", time.Since(Started).Milliseconds(),
@@ -453,7 +449,6 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	Logger := NatsBotEventSubscriber.Logger.With(
 		"operation", "create_bot_event_workers",
 		"worker_count", Count,
-		observability.TraceFields(ctx, observability.TraceID, observability.SpanID),
 	)
 
 	Logger.DebugContext(ctx, "Проверка состояния перед запуском воркеров")
