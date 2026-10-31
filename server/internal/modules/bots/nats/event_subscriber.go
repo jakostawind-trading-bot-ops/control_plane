@@ -284,7 +284,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 		)
 		return
 	}
-	// ! Logger = Logger.With("message_type", MessageType)
+	Logger = Logger.With("message_type", MessageType)
 
 	// Этап 2: декодер отвечает за разбор контракта и создание внутреннего события.
 	Logger.DebugContext(ctx, "Передача сообщения декодеру")

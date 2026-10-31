@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
@@ -53,6 +54,8 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	MessageType string,
 	RawMessage []byte,
 ) (events.BaseBotEventI, error) {
+	Started := time.Now()
+
 	Logger := NatsBotEventDecoder.Logger.With(
 		"operation", "decode_bot_event",
 		"message_type", MessageType,
@@ -69,7 +72,10 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	Logger.DebugContext(ctx, "Поиск маршрута декодирования", "payload_size", len(RawMessage))
 	Route, ok := NatsBotEventDecoder.BotEventDecoderRoutes[MessageType]
 	if !ok {
-		Logger.DebugContext(ctx, "Маршрут декодирования не найден")
+		Logger.DebugContext(
+			ctx, "Маршрут декодирования не найден",
+			"duration_ms", time.Since(Started).Milliseconds(),
+		)
 		return nil, fmt.Errorf("маршрут для типа %q не зарегистрирован", MessageType)
 	}
 
@@ -77,14 +83,21 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	Logger.DebugContext(ctx, "Декодирование и валидация контракта")
 	BotEvent, err := Route.Decode(ctx, RawMessage)
 	if err != nil {
-		Logger.DebugContext(ctx, "Контракт не декодирован")
+		Logger.DebugContext(
+			ctx, "Контракт не декодирован",
+			"duration_ms", time.Since(Started).Milliseconds(),
+		)
 		return nil, fmt.Errorf(
 			"обработка сообщения %q: %w",
 			MessageType, err,
 		)
 	}
 
-	Logger.DebugContext(ctx, "Событие декодировано", "event_type", fmt.Sprintf("%T", BotEvent))
+	Logger.DebugContext(
+		ctx, "Событие декодировано",
+		"event_type", fmt.Sprintf("%T", BotEvent),
+		"duration_ms", time.Since(Started).Milliseconds(),
+	)
 	return BotEvent, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -35,6 +36,8 @@ type BotEventDispatcher struct {
 //	BotEvent -> [Поиск обработчика] +-- не найден -> error
 //	                               +-- найден -> [HandleBotEvent] -> nil / error
 func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Context, BotEvent BaseBotEventI) error {
+	Started := time.Now()
+
 	Logger := BotEventDispatcher.Logger.With("operation", "dispatch_bot_event", "event_type", fmt.Sprintf("%T", BotEvent))
 
 	Tracer := otel.Tracer(
@@ -48,18 +51,18 @@ func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Conte
 	Handler, ok := BotEventDispatcher.Handlers[reflect.TypeOf(BotEvent)]
 
 	if !ok {
-		Logger.DebugContext(ctx, "Обработчик события не зарегистрирован")
+		Logger.DebugContext(ctx, "Обработчик события не зарегистрирован", "duration_ms", time.Since(Started).Milliseconds(),)
 		return fmt.Errorf("обработчик события %T не зарегистрирован", BotEvent)
 	}
 
 	// Этап 2: подписчик владеет итоговым логом и решением о подтверждении сообщения.
 	Logger.DebugContext(ctx, "Вызов обработчика события")
 	if err := Handler.HandleBotEvent(ctx, BotEvent); err != nil {
-		Logger.DebugContext(ctx, "Обработчик вернул ошибку")
+		Logger.DebugContext(ctx, "Обработчик вернул ошибку", "duration_ms", time.Since(Started).Milliseconds(),)
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "Обработчик вернул ошибку")
+		span.SetStatus(codes.Error, "Обработчик вернул ошибку", )
 		return err
 	}
-	Logger.DebugContext(ctx, "Обработчик события завершён")
+	Logger.DebugContext(ctx, "Обработчик события завершён", "duration_ms", time.Since(Started).Milliseconds(),)
 	return nil
 }
