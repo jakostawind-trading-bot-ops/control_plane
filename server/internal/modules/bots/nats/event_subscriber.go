@@ -37,6 +37,20 @@ var (
 	INVALID_WORKER_COUNT = errors.New("NatsBotEventSubscriber: неверное количество воркеров")
 	// MESSAGE_QUEUE_NOT_CREATED означает, что CreateWorkers получил nil в поле MessagesQueue.
 	MESSAGE_QUEUE_NOT_CREATED = errors.New("NatsBotEventSubscriber: MessageQueue не создана. Нужно создать в di")
+	// MESSAGE_QUEUE_CLOSED означает, что callback пропустил сообщение после закрытия очереди.
+	MESSAGE_QUEUE_CLOSED = errors.New("NatsBotEventSubscriber: очередь сообщений закрыта")
+	// MESSAGE_TYPE_NOT_FOUND означает, что в subject отсутствует непустой суффикс типа события.
+	MESSAGE_TYPE_NOT_FOUND = errors.New("NatsBotEventSubscriber: в subject отсутствует тип события после префикса")
+	// SUBJECT_PREFIX_MISMATCH означает несовпадение префикса или недопустимый токен subject в его пределах.
+	SUBJECT_PREFIX_MISMATCH = errors.New("NatsBotEventSubscriber: subject не соответствует префиксу подписки")
+	// CANNOT_DECODE_MESSAGE обозначает отказ декодера; безопасная причина записывается отдельно.
+	CANNOT_DECODE_MESSAGE = errors.New("NatsBotEventSubscriber: не удалось декодировать сообщение")
+	// CANNOT_DISPATCH_EVENT объединяется в логе с ошибкой диспетчера, кроме отмены контекста.
+	CANNOT_DISPATCH_EVENT = errors.New("NatsBotEventSubscriber: не удалось обработать событие")
+	// CANNOT_ACK_MESSAGE объединяется в логе с ошибкой отправки Ack.
+	CANNOT_ACK_MESSAGE = errors.New("NatsBotEventSubscriber: не удалось отправить подтверждение сообщения")
+	// CANNOT_TERMINATE_MESSAGE объединяется в логе с ошибкой отправки Term.
+	CANNOT_TERMINATE_MESSAGE = errors.New("NatsBotEventSubscriber: не удалось прекратить повторную доставку сообщения")
 	// CLOSE_SUBSCRIPTION объединяется с ошибкой запуска Subscription.Drain.
 	CLOSE_SUBSCRIPTION = errors.New("NatsBotEventSubscriber: остановка подписки NATS")
 )
@@ -134,21 +148,24 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 
 	if NatsBotEventSubscriber.Closing {
 		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён: идёт остановка",
+			ctx, "Запуск подписки отклонён",
+			"error", IS_CLOSING,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		return IS_CLOSING
 	}
 	if !NatsBotEventSubscriber.WorkersStarted {
 		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён: воркеры не запущены",
+			ctx, "Запуск подписки отклонён",
+			"error", WORKERS_NOT_STARTED,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		return WORKERS_NOT_STARTED
 	}
 	if NatsBotEventSubscriber.Jetstream == nil {
 		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён: JetStream не задан",
+			ctx, "Запуск подписки отклонён",
+			"error", NATS_NOT_CONNECTED,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		return NATS_NOT_CONNECTED
@@ -177,7 +194,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			defer NatsBotEventSubscriber.MessageQueueMutex.RUnlock()
 			if NatsBotEventSubscriber.MessageQueueClosed {
 				NatsBotEventSubscriber.Logger.DebugContext(
-					ctx, "Сообщение пропущено: очередь закрыта",
+					ctx, "Сообщение пропущено",
+					"error", MESSAGE_QUEUE_CLOSED,
 					"operation", "enqueue_bot_event",
 					"subject", Message.Subject,
 					"duration_ms", time.Since(Started).Milliseconds(),
@@ -198,12 +216,14 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 
 	// Этап 3: неудачная попытка сохраняет состояние для повторного Start.
 	if err != nil {
+		err = errors.Join(CANNOT_SUBSCRIBE, err)
 		// Итоговую ошибку попытки пишет DI-провайдер, управляющий повторами.
 		Logger.DebugContext(
 			ctx, "Попытка создания подписки завершилась ошибкой",
+			"error", err,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
-		return errors.Join(CANNOT_SUBSCRIBE, err)
+		return err
 	}
 
 	NatsBotEventSubscriber.Subscription = Subscription
@@ -286,7 +306,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	)
 	if err != nil {
 		Logger.WarnContext(
-			ctx, "Сообщение отклонено: некорректный subject",
+			ctx, "Сообщение отклонено",
 			"error", err,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
@@ -310,13 +330,14 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 		} else {
 			Logger.WarnContext(
 				ctx, "Сообщение отклонено при декодировании",
-				"error", botEventDecodeErrorLogValue(err),
+				"error", CANNOT_DECODE_MESSAGE,
+				"cause", botEventDecodeErrorLogValue(err),
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
 			if termErr := Message.Term(); termErr != nil { // Term сообщения
 				Logger.ErrorContext(
-					ctx, "Не удалось прекратить повторную доставку сообщения",
-					"error", termErr,
+					ctx, "Отправка Term завершилась ошибкой",
+					"error", errors.Join(CANNOT_TERMINATE_MESSAGE, termErr),
 				)
 			}
 		}
@@ -340,7 +361,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 		} else {
 			Logger.ErrorContext(
 				ctx, "Обработка события завершилась ошибкой",
-				"error", err, "duration_ms",
+				"error", errors.Join(CANNOT_DISPATCH_EVENT, err), "duration_ms",
 				time.Since(Started).Milliseconds(),
 			)
 		}
@@ -351,8 +372,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	Logger.DebugContext(ctx, "Отправка подтверждения сообщения")
 	if err := Message.Ack(); err != nil {
 		Logger.ErrorContext(
-			ctx, "Не удалось отправить подтверждение сообщения",
-			"error", err, "duration_ms",
+			ctx, "Отправка Ack завершилась ошибкой",
+			"error", errors.Join(CANNOT_ACK_MESSAGE, err), "duration_ms",
 			time.Since(Started).Milliseconds(),
 		)
 	} else {
@@ -376,8 +397,9 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 // Результаты:
 //   - string — суффикс типа с сохранением точек, например
 //     v1.lifecycle.bot_started_event; при ошибке пустая строка.
-//   - error — отсутствие непустого суффикса, несовпадение префикса либо
-//     пустой токен или символы * и > в части Subject, соответствующей префиксу.
+//   - error — обёртка MESSAGE_TYPE_NOT_FOUND при отсутствии непустого суффикса
+//     либо SUBJECT_PREFIX_MISMATCH при несовпадении префикса, пустом токене
+//     или символах * и > в части Subject, соответствующей префиксу.
 //
 // Этапы:
 //  1. Разделить префикс и subject, оставив суффикс типа целиком.
@@ -402,7 +424,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) GetMessageType(
 	PrefixTokens := strings.Split(strings.TrimSuffix(NatsBotEventSubscriber.SubjectPrefix, "."), ".")
 	SubjectTokens := strings.SplitN(Subject, ".", len(PrefixTokens)+1)
 	if len(SubjectTokens) != len(PrefixTokens)+1 || SubjectTokens[len(PrefixTokens)] == "" {
-		return "", fmt.Errorf("в subject %q отсутствует тип события после префикса", Subject)
+		return "", fmt.Errorf("%w: subject %q", MESSAGE_TYPE_NOT_FOUND, Subject)
 	}
 
 	// Этап 2: wildcard занимает один конкретный токен; * и > во входном токене запрещены.
@@ -410,7 +432,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) GetMessageType(
 		Token := SubjectTokens[Index]
 		if Token == "" || strings.ContainsAny(Token, "*>") ||
 			(PrefixToken != "*" && PrefixToken != Token) {
-			return "", fmt.Errorf("subject %q не соответствует префиксу %q", Subject, NatsBotEventSubscriber.SubjectPrefix)
+			return "", fmt.Errorf("%w: subject %q, префикс %q", SUBJECT_PREFIX_MISMATCH, Subject, NatsBotEventSubscriber.SubjectPrefix)
 		}
 	}
 	return SubjectTokens[len(PrefixTokens)], nil
@@ -476,7 +498,10 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	defer NatsBotEventSubscriber.LifecycleMutex.Unlock()
 
 	if NatsBotEventSubscriber.Closing {
-		Logger.DebugContext(ctx, "Запуск воркеров отклонён: идёт остановка")
+		Logger.DebugContext(
+			ctx, "Запуск воркеров отклонён",
+			"error", IS_CLOSING,
+		)
 		return IS_CLOSING
 	}
 	if NatsBotEventSubscriber.WorkersStarted {
@@ -596,7 +621,10 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 				Closed := NatsBotEventSubscriber.Subscription.StatusChanged(nats.SubscriptionClosed)
 				if err := Subscription.Drain(); err != nil {
 					NatsBotEventSubscriber.CloseErr = errors.Join(CLOSE_SUBSCRIPTION, err)
-					Logger.DebugContext(ctx, "Drain завершился ошибкой; остановка воркеров продолжается")
+					Logger.DebugContext(
+						ctx, "Drain завершился ошибкой; остановка воркеров продолжается",
+						"error", NatsBotEventSubscriber.CloseErr,
+					)
 				} else {
 					<-Closed
 					Logger.DebugContext(ctx, "Подписка JetStream закрыта")
