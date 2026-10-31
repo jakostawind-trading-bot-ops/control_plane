@@ -228,10 +228,14 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 //
 // Побочные эффекты:
 // Вызывает обработчик через BotEventDispatcher и логирует итог обработки,
-// не возвращая ошибки воркеру. При ошибке до Ack выходит без Ack, Nak или Term;
-// дальнейшую доставку определяет consumer. Ack вызывается без ожидания
-// подтверждения сервера; его ошибка только логируется. Дедупликации и отката
-// побочных эффектов обработчика при ошибке Ack нет.
+// не возвращая ошибки воркеру. При ошибке разбора subject или диспетчера
+// выходит без Ack, Nak и Term. При ошибке декодирования вызывает Term,
+// кроме context.Canceled, включая обёрнутую ошибку.
+// При AckExplicit дальнейшая доставка неподтверждённого сообщения зависит
+// от AckWait, BackOff, MaxDeliver и состояния consumer.
+// Ack вызывается без ожидания подтверждения сервера; его ошибка только
+// логируется. Дедупликации и отката побочных эффектов обработчика
+// при ошибке Ack нет.
 //
 // Этапы:
 //  1. Извлечь ключ маршрута из Subject.
@@ -241,12 +245,16 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 //
 // Схема:
 //
-//	Subject -> [GetMessageType] -> [BotEventDecode с Data] -> [BotEventDispatch]
-//	                 |                      |                       |
-//	               ошибка                 ошибка                  ошибка
-//	                 v                      v                       v
-//	            [лог, выход без Ack при любой из этих ошибок]
-//	[успех BotEventDispatch] -> [Ack] -> [ERROR при ошибке / INFO при успехе]
+//	Subject -> [GetMessageType] --ошибка--> [лог, выход]
+//	                |
+//	                v
+//	[BotEventDecode с Data] --ошибка--> [Canceled: лог, выход; иначе: лог, Term]
+//	                |
+//	                v
+//	[BotEventDispatch] --ошибка--> [лог, выход без подтверждения]
+//	                |
+//	                v
+//	[Ack] -> [ERROR при ошибке / INFO при успехе]
 func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	ctx context.Context,
 	Message *nats.Msg,
@@ -335,12 +343,6 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 				"error", err, "duration_ms",
 				time.Since(Started).Milliseconds(),
 			)
-			if termErr := Message.Term(); termErr != nil {
-				Logger.ErrorContext(
-					ctx, "Не удалось прекратить повторную доставку сообщения",
-					"error", termErr,
-				)
-			}
 		}
 		return
 	}
