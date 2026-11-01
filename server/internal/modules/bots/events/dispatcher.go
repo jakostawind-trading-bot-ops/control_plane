@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -9,6 +10,13 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
+)
+
+var (
+	// HANDLER_NOT_FOUND означает, что для конкретного Go-типа события не зарегистрирован обработчик.
+	HANDLER_NOT_FOUND = errors.New("BotEventDispatcher: обработчик события не зарегистрирован")
+	// CANNOT_HANDLE_EVENT обозначает отказ обработчика в логах и span; исходная ошибка возвращается без изменения.
+	CANNOT_HANDLE_EVENT = errors.New("BotEventDispatcher: не удалось обработать событие")
 )
 
 // BotEventDispatcher синхронно передаёт событие обработчику из реестра DI.
@@ -25,7 +33,7 @@ type BotEventDispatcher struct {
 //   - BotEvent — внутреннее событие, конкретный тип которого определяет маршрут.
 //
 // Результат — ошибка отсутствующего маршрута либо исходная ошибка обработчика.
-// Итог операции логирует вызывающий подписчик; здесь фиксируются только этапы.
+// Итог операции логирует вызывающий подписчик; здесь фиксируются этапы и ошибки.
 //
 // Этапы:
 //  1. Найти обработчик по конкретному Go-типу.
@@ -51,18 +59,29 @@ func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Conte
 	Handler, ok := BotEventDispatcher.Handlers[reflect.TypeOf(BotEvent)]
 
 	if !ok {
-		Logger.DebugContext(ctx, "Обработчик события не зарегистрирован", "duration_ms", time.Since(Started).Milliseconds(),)
-		return fmt.Errorf("обработчик события %T не зарегистрирован", BotEvent)
+		Logger.ErrorContext(
+			ctx, "Обработчик события не зарегистрирован",
+			"error", HANDLER_NOT_FOUND,
+			"duration_ms", time.Since(Started).Milliseconds(),
+		)
+		span.RecordError(HANDLER_NOT_FOUND)
+		span.SetStatus(codes.Error, HANDLER_NOT_FOUND.Error())
+		return HANDLER_NOT_FOUND
 	}
 
 	// Этап 2: подписчик владеет итоговым логом и решением о подтверждении сообщения.
 	Logger.DebugContext(ctx, "Вызов обработчика события")
 	if err := Handler.HandleBotEvent(ctx, BotEvent); err != nil {
-		Logger.DebugContext(ctx, "Обработчик вернул ошибку", "duration_ms", time.Since(Started).Milliseconds(),)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "Обработчик вернул ошибку", )
-		return err
+		Logger.ErrorContext(
+			ctx, "Обработчик вернул ошибку",
+			"error", CANNOT_HANDLE_EVENT,
+			"cause", err,
+			"duration_ms", time.Since(Started).Milliseconds(),
+		)
+		span.RecordError(CANNOT_HANDLE_EVENT)
+		span.SetStatus(codes.Error, CANNOT_HANDLE_EVENT.Error())
+		return CANNOT_HANDLE_EVENT
 	}
-	Logger.DebugContext(ctx, "Обработчик события завершён", "duration_ms", time.Since(Started).Milliseconds(),)
+	Logger.DebugContext(ctx, "Обработчик события завершён", "duration_ms", time.Since(Started).Milliseconds())
 	return nil
 }

@@ -12,6 +12,14 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+)
+
+var (
+	// DECODER_ROUTE_NOT_FOUND означает, что для MessageType не зарегистрирован маршрут декодирования.
+	DECODER_ROUTE_NOT_FOUND = errors.New("NatsBotEventDecoder: маршрут декодирования не зарегистрирован")
+	// CANNOT_DECODE_CONTRACT обозначает отказ Decode в логах и span; безопасная причина записывается отдельно.
+	CANNOT_DECODE_CONTRACT = errors.New("NatsBotEventDecoder: не удалось декодировать контракт")
 )
 
 // NatsBotEventDecoder выбирает декодер входящего сообщения по его типу.
@@ -72,25 +80,29 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	Logger.DebugContext(ctx, "Поиск маршрута декодирования", "payload_size", len(RawMessage))
 	Route, ok := NatsBotEventDecoder.BotEventDecoderRoutes[MessageType]
 	if !ok {
-		Logger.DebugContext(
+		Logger.ErrorContext(
 			ctx, "Маршрут декодирования не найден",
+			"error", DECODER_ROUTE_NOT_FOUND,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
-		return nil, fmt.Errorf("маршрут для типа %q не зарегистрирован", MessageType)
+		span.RecordError(DECODER_ROUTE_NOT_FOUND)
+		span.SetStatus(codes.Error, DECODER_ROUTE_NOT_FOUND.Error())
+		return nil, DECODER_ROUTE_NOT_FOUND
 	}
 
 	// Этап 2: маршрут разбирает, проверяет и преобразует свой контракт.
 	Logger.DebugContext(ctx, "Декодирование и валидация контракта")
 	BotEvent, err := Route.Decode(ctx, RawMessage)
 	if err != nil {
-		Logger.DebugContext(
+		Logger.ErrorContext(
 			ctx, "Контракт не декодирован",
+			"error", CANNOT_DECODE_CONTRACT,
+			"cause", botEventDecodeErrorLogValue(err),
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
-		return nil, fmt.Errorf(
-			"обработка сообщения %q: %w",
-			MessageType, err,
-		)
+		span.RecordError(CANNOT_DECODE_CONTRACT)
+		span.SetStatus(codes.Error, CANNOT_DECODE_CONTRACT.Error())
+		return nil, DECODER_ROUTE_NOT_FOUND
 	}
 
 	Logger.DebugContext(

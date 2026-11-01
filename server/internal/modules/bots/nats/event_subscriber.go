@@ -12,6 +12,7 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 )
 
 const (
@@ -152,6 +153,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			"error", IS_CLOSING,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(IS_CLOSING)
+		span.SetStatus(codes.Error, IS_CLOSING.Error())
 		return IS_CLOSING
 	}
 	if !NatsBotEventSubscriber.WorkersStarted {
@@ -160,6 +163,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			"error", WORKERS_NOT_STARTED,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(WORKERS_NOT_STARTED)
+		span.SetStatus(codes.Error, WORKERS_NOT_STARTED.Error())
 		return WORKERS_NOT_STARTED
 	}
 	if NatsBotEventSubscriber.Jetstream == nil {
@@ -168,6 +173,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			"error", NATS_NOT_CONNECTED,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(NATS_NOT_CONNECTED)
+		span.SetStatus(codes.Error, NATS_NOT_CONNECTED.Error())
 		return NATS_NOT_CONNECTED
 	}
 	if NatsBotEventSubscriber.Subscription != nil && NatsBotEventSubscriber.Subscription.IsValid() {
@@ -223,6 +230,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 			"error", err,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return err
 	}
 
@@ -310,6 +319,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 			"error", err,
 			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return
 	}
 	Logger = Logger.With("message_type", MessageType)
@@ -327,6 +338,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 				"error", context.Canceled,
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else {
 			Logger.WarnContext(
 				ctx, "Сообщение отклонено при декодировании",
@@ -334,11 +347,16 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 				"cause", botEventDecodeErrorLogValue(err),
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(CANNOT_DECODE_MESSAGE)
+			span.SetStatus(codes.Error, CANNOT_DECODE_MESSAGE.Error())
 			if termErr := Message.Term(); termErr != nil { // Term сообщения
+				err := errors.Join(CANNOT_TERMINATE_MESSAGE, termErr)
 				Logger.ErrorContext(
 					ctx, "Отправка Term завершилась ошибкой",
-					"error", errors.Join(CANNOT_TERMINATE_MESSAGE, termErr),
+					"error", err,
 				)
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
 			}
 		}
 		return
@@ -355,15 +373,20 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 		if errors.Is(err, context.Canceled) {
 			Logger.DebugContext(
 				ctx, "Обработка события отменена",
-				"error", err, "duration_ms",
-				time.Since(Started).Milliseconds(),
+				"error", err,
+				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else {
+			err := errors.Join(CANNOT_DISPATCH_EVENT, err)
 			Logger.ErrorContext(
 				ctx, "Обработка события завершилась ошибкой",
-				"error", errors.Join(CANNOT_DISPATCH_EVENT, err), "duration_ms",
-				time.Since(Started).Milliseconds(),
+				"error", err, 
+				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 		return
 	}
@@ -371,11 +394,14 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) HandleMessage(
 	// Этап 4: успешная передача в очередь сама по себе не подтверждает обработку.
 	Logger.DebugContext(ctx, "Отправка подтверждения сообщения")
 	if err := Message.Ack(); err != nil {
+		err := errors.Join(CANNOT_ACK_MESSAGE, err)
 		Logger.ErrorContext(
 			ctx, "Отправка Ack завершилась ошибкой",
-			"error", errors.Join(CANNOT_ACK_MESSAGE, err), "duration_ms",
-			time.Since(Started).Milliseconds(),
+			"error", err, 
+			"duration_ms", time.Since(Started).Milliseconds(),
 		)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	} else {
 		Logger.InfoContext(
 			ctx, "Сообщение обработано, Ack отправлен",
@@ -424,6 +450,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) GetMessageType(
 	PrefixTokens := strings.Split(strings.TrimSuffix(NatsBotEventSubscriber.SubjectPrefix, "."), ".")
 	SubjectTokens := strings.SplitN(Subject, ".", len(PrefixTokens)+1)
 	if len(SubjectTokens) != len(PrefixTokens)+1 || SubjectTokens[len(PrefixTokens)] == "" {
+		span.RecordError(MESSAGE_TYPE_NOT_FOUND)
+		span.SetStatus(codes.Error, MESSAGE_TYPE_NOT_FOUND.Error())
 		return "", fmt.Errorf("%w: subject %q", MESSAGE_TYPE_NOT_FOUND, Subject)
 	}
 
@@ -432,6 +460,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) GetMessageType(
 		Token := SubjectTokens[Index]
 		if Token == "" || strings.ContainsAny(Token, "*>") ||
 			(PrefixToken != "*" && PrefixToken != Token) {
+			span.RecordError(SUBJECT_PREFIX_MISMATCH)
+			span.SetStatus(codes.Error, SUBJECT_PREFIX_MISMATCH.Error())
 			return "", fmt.Errorf("%w: subject %q, префикс %q", SUBJECT_PREFIX_MISMATCH, Subject, NatsBotEventSubscriber.SubjectPrefix)
 		}
 	}
@@ -491,6 +521,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 	// Этап 1: проверка Count не требует блокировки, состояние пула защищает mutex.
 	if Count <= 0 {
 		Logger.ErrorContext(ctx, "Неверное количество воркеров", "error", INVALID_WORKER_COUNT)
+		span.RecordError(INVALID_WORKER_COUNT)
+		span.SetStatus(codes.Error, INVALID_WORKER_COUNT.Error())
 		return INVALID_WORKER_COUNT
 	}
 
@@ -502,6 +534,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 			ctx, "Запуск воркеров отклонён",
 			"error", IS_CLOSING,
 		)
+		span.RecordError(IS_CLOSING)
+		span.SetStatus(codes.Error, IS_CLOSING.Error())
 		return IS_CLOSING
 	}
 	if NatsBotEventSubscriber.WorkersStarted {
@@ -509,6 +543,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 			ctx, "Повторный запуск воркеров отклонён",
 			"error", WORKERS_ALREADY_STARTED,
 		)
+		span.RecordError(WORKERS_ALREADY_STARTED)
+		span.SetStatus(codes.Error, WORKERS_ALREADY_STARTED.Error())
 		return WORKERS_ALREADY_STARTED
 	}
 	if NatsBotEventSubscriber.MessagesQueue == nil {
@@ -516,6 +552,8 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 			ctx, "Очередь сообщений не создана",
 			"error", MESSAGE_QUEUE_NOT_CREATED,
 		)
+		span.RecordError(MESSAGE_QUEUE_NOT_CREATED)
+		span.SetStatus(codes.Error, MESSAGE_QUEUE_NOT_CREATED.Error())
 		return MESSAGE_QUEUE_NOT_CREATED
 	}
 
@@ -664,7 +702,12 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 
 	select {
 	case <-CloseDone:
-		return NatsBotEventSubscriber.CloseErr
+		err := NatsBotEventSubscriber.CloseErr
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		return err
 	case <-ctx.Done():
 		if errors.Is(ctx.Err(), context.Canceled) {
 			Logger.DebugContext(
@@ -672,12 +715,16 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 				"error", ctx.Err(),
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(ctx.Err())
+			span.SetStatus(codes.Error, ctx.Err().Error())
 		} else {
 			Logger.ErrorContext(
 				ctx, "Истёк срок ожидания остановки; очистка продолжается",
 				"error", ctx.Err(),
 				"duration_ms", time.Since(Started).Milliseconds(),
 			)
+			span.RecordError(ctx.Err())
+			span.SetStatus(codes.Error, ctx.Err().Error())
 		}
 		return ctx.Err()
 	}

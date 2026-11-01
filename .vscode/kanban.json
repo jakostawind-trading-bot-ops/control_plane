@@ -39,12 +39,12 @@
             "title": "To-Do",
             "tasks": [
                 {
-                    "text": "прокинуть trace в BotEventHandler",
-                    "id": "xlxxhozt6fpgprfz43ecy40z"
+                    "text": "доавить ошибки в диспатчер и декодер",
+                    "id": "v5tjq614pgkudh578gorgihx"
                 },
                 {
-                    "text": "добавть везде \nspan.RecordError(err)\nspan.SetStatus(codes.Error\n",
-                    "id": "slyeg4durmrai4pnf13ep4x7"
+                    "text": "прокинуть trace в BotEventHandler",
+                    "id": "xlxxhozt6fpgprfz43ecy40z"
                 },
                 {
                     "text": "перейти на fastjson либу",
@@ -60,6 +60,10 @@
                 {
                     "text": "di:\n-  [x] event_decoder_provider\n-  [x] event_dispatcher_provider\n-  [x] subscriber_provider\n-  [x] bot_event_jetstream_provider\n- command_publisher_provider\n\n ",
                     "id": "g6d2ncnc7js5uxs7q6u629nd"
+                },
+                {
+                    "text": "добавть везде \nspan.RecordError(err)\nspan.SetStatus(codes.Error\n",
+                    "id": "slyeg4durmrai4pnf13ep4x7"
                 }
             ],
             "id": "z6l6dxcvw5uo5ida4089hf5z",
@@ -103,5 +107,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793402730149
+    "timestamp": 1793510632344
 }
