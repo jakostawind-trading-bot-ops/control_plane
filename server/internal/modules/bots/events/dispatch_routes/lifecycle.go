@@ -5,6 +5,7 @@ import (
 
 	events_lifecycle "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/events/lifecycle"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
+	usecases "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/usecases/lifecycle"
 )
 
 // BotStartedEventDispatchRoute возвращает маршрут запуска бота с JSON-логгером Logger из DI.
@@ -13,6 +14,9 @@ func BotStartedEventDispatchRoute(Logger *slog.Logger) ports.BotEventDispatchRou
 		BotEvent: &events_lifecycle.BotStartedEvent{},
 		Handler: &events_lifecycle.BotStartedEventHandler{
 			Logger: Logger.With("component", "bot_started_event_handler"),
+			BotStartedUC: usecases.BotStartedUC{
+				Logger: Logger.With("component", "bot_started_use_case"),
+			},
 		},
 	}
 }
