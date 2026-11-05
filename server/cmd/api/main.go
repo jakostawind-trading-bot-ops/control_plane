@@ -1,14 +1,14 @@
 package main
 
 import (
-	di_bots "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/modules/bots"
-	di_bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/modules/bots/nats"
-	"github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared"
-	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/cmd/api/di/shared/observability"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
-	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/events/dispatch_routes"
-	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats/decoder_routes"
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/ports"
+	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events/dispatch_routes"
+	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/nats/decoder_routes"
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/ports"
+	di_bots "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/modules/bots"
+	di_bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/modules/bots/nats"
+	di "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/shared"
+	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/shared/observability"
 	tracing "github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/tracing"
 	"go.uber.org/fx"
 )
