@@ -14,10 +14,10 @@ type BotStartedEvent struct {
 	events.BaseBotEvent // Идентификатор бота, время и payload входящего события.
 }
 
-// BotStartedEventHandler пока фиксирует получение события; use case ещё не подключён.
+// BotStartedEventHandler вызывает use case при получении события запуска бота.
 type BotStartedEventHandler struct {
-	Logger       *slog.Logger // Общий JSON-логгер из DI; payload события в логи не передаётся.
-	BotStartedUC usecases.BotStartedUC
+	Logger       *slog.Logger           // Общий JSON-логгер из DI; payload события в логи не передаётся.
+	BotStartedUC *usecases.BotStartedUC // Готовый экземпляр из DI; обязателен для обработки.
 }
 
 var _ events.BotEventHandlerI = (*BotStartedEventHandler)(nil)

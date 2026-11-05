@@ -35,8 +35,9 @@ func main() {
 			},
 		),
 
-
 		// Bots Module
+		fx.Provide(di_bots.BotStartedUCProvider),
+
 		fx.Provide( // BotEventDecoder
 			eventroutes.BotEventDecoderRoutesRegistry,
 			di_bots.BotEventDecoderProvider,
