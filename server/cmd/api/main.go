@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
 	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events/dispatch_routes"
 	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/nats/decoder_routes"
@@ -25,6 +27,10 @@ func main() {
 
 		fx.Provide(di.NatsClientProvider), // NatsClient
 
+		fx.Provide(func() *http.Server {
+			return di.CreateHTTPServer(":8080", http.NotFoundHandler())
+		}),
+
 		// Bots Module
 		fx.Provide( // BotEventDecoder
 			eventroutes.BotEventDecoderRoutesRegistry,
@@ -43,6 +49,8 @@ func main() {
 		// Fx запускает хуки по порядку, а останавливает в обратном порядке.
 		fx.Invoke(func(_ *tracing.Tracing) {}),
 		fx.Invoke(func(_ ports.BotEventSubscriberPort) {}),
+		// HTTP останавливается до подписчика и observability.
+		fx.Invoke(di.HTTPServerProvider),
 	)
 
 	app.Run()
