@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 
+	"github.com/gin-gonic/gin"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
 	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events/dispatch_routes"
 	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/nats/decoder_routes"
@@ -27,9 +28,13 @@ func main() {
 
 		fx.Provide(di.NatsClientProvider), // NatsClient
 
-		fx.Provide(func() *http.Server {
-			return di.CreateHTTPServer(":8080", http.NotFoundHandler())
-		}),
+		fx.Provide(di.GinProvider),
+		fx.Provide(
+			func(GinEngine *gin.Engine) *http.Server {
+				return di.CreateHTTPServer(":8000", GinEngine)
+			},
+		),
+
 
 		// Bots Module
 		fx.Provide( // BotEventDecoder
