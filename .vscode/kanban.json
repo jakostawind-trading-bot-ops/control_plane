@@ -43,6 +43,10 @@
             "title": "To-Do",
             "tasks": [
                 {
+                    "text": "сделать универсальные распонсы на ошибки в server/internal/transport/http/contracts",
+                    "id": "qiaczllb6oar7c6u2ogp607n"
+                },
+                {
                     "text": "перейти на fastjson либу",
                     "id": "e4vj738bemh1g1newwt0yoc1"
                 }
@@ -111,5 +115,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793865805209
+    "timestamp": 1793969076986
 }

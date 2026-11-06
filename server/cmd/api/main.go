@@ -14,6 +14,8 @@ import (
 	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/events/bots/dispatch_routes"
 	tracing "github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/tracing"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/ports"
+	http_routes "github.com/jakostawind-trading-bot-ops/control_plane/internal/transport/http/routes"
+	http_auth_routes_v1 "github.com/jakostawind-trading-bot-ops/control_plane/internal/transport/http/routes/v1/auth"
 	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/transport/nats/bot_events_decoder_routes"
 	"go.uber.org/fx"
 )
@@ -37,8 +39,13 @@ func main() {
 			},
 		),
 
-		// Bots Module
-		fx.Provide(di_usecases.BotStartedUCProvider),
+		// USECASES
+		fx.Provide(
+			// Bots
+			di_usecases.BotStartedUCProvider,
+			// Auth
+			di_usecases.LoginUCProvider,
+		),
 
 		fx.Provide( // BotEventDecoder
 			eventroutes.BotEventDecoderRoutesRegistry,
@@ -53,10 +60,21 @@ func main() {
 			di_nats.NatsBotEventJetStreamProvider,
 			di_nats.NatsBotEventSubscriberProvider,
 		),
+
+		fx.Provide(
+			http_auth_routes_v1.HTTPAuthHandlersRegistry,
+			http_routes.HTTPhandlersRegistry,
+		),
+
+
+
 		// Регистрируем lifecycle tracing до lifecycle подписчика.
 		// Fx запускает хуки по порядку, а останавливает в обратном порядке.
 		fx.Invoke(func(_ *tracing.Tracing) {}),
 		fx.Invoke(func(_ ports.BotEventSubscriberPort) {}),
+
+		fx.Invoke(http_routes.RegisterHTTPRoutes),
+
 		// HTTP останавливается до подписчика и observability.
 		fx.Invoke(di_http.HTTPServerProvider),
 	)
