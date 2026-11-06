@@ -20,6 +20,10 @@
             "title": "Plan",
             "tasks": [
                 {
+                    "text": "- В обработчике BotStarted (server/internal/bots/events/events/lifecycle/bot_started_ev.go:47) ошибка Execute игнорируется, после чего возвращается nil. Если use case начнёт возвращать ошибки, подписчик всё равно отправит Ack. Кроме того, use case сейчас вообще не получает данные события.\n- Декодер (server/internal/bots/nats/event_decoder.go:105) возвращает DECODER_ROUTE_NOT_FOUND даже при ошибке разбора существующего контракта, а диспетчер (server/internal/bots/events/dispatcher.go:83) заменяет ошибку обработчика общей ошибкой. Причины теряются, что затрудняет диагностику и классификацию ошибок.",
+                    "id": "wfyqs9i3vx3w586ea2nvgajv"
+                },
+                {
                     "text": "6. Средний приоритет: две команды Makefile используют несуществующий сервис.\n   В Makefile:5 (Makefile:5) задан SERVICE ?= control_plane_server, а Compose объявляет cp_server. Поэтому make dev-logs и make dev-shell без переопределения SERVICE не работают. Исправление — согласовать название.",
                     "id": "tuw18feal807hxxy8916o14n"
                 },
@@ -107,5 +111,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793687251516
+    "timestamp": 1793865805209
 }

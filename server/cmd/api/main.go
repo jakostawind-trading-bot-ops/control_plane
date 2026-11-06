@@ -5,14 +5,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
-	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/events/dispatch_routes"
-	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/nats/decoder_routes"
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/bots/ports"
-	di_bots "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/modules/bots"
-	di_bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/modules/bots/nats"
-	di "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/shared"
-	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/shared/observability"
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal/di"
+	di_events "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/events/bot"
+	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/observability"
+	di_http "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/http"
+	di_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/nats"
+	di_usecases "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/usecases"
+	dispatchroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/events/bots/dispatch_routes"
 	tracing "github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/tracing"
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal/ports"
+	eventroutes "github.com/jakostawind-trading-bot-ops/control_plane/internal/transport/nats/bot_events_decoder_routes"
 	"go.uber.org/fx"
 )
 
@@ -26,37 +28,37 @@ func main() {
 		fx.Provide(di_observability.LoggerProvider), // OpenTelemetry logs
 		fx.Provide(di_observability.TracerProvider), // OpenTelemetry tracing
 
-		fx.Provide(di.NatsClientProvider), // NatsClient
+		fx.Provide(di_nats.NatsClientProvider), // NatsClient
 
-		fx.Provide(di.GinProvider),
+		fx.Provide(di_http.GinProvider),
 		fx.Provide(
 			func(GinEngine *gin.Engine) *http.Server {
-				return di.CreateHTTPServer(":8000", GinEngine)
+				return di_http.CreateHTTPServer(":8000", GinEngine)
 			},
 		),
 
 		// Bots Module
-		fx.Provide(di_bots.BotStartedUCProvider),
+		fx.Provide(di_usecases.BotStartedUCProvider),
 
 		fx.Provide( // BotEventDecoder
 			eventroutes.BotEventDecoderRoutesRegistry,
-			di_bots.BotEventDecoderProvider,
+			di_nats.BotEventDecoderProvider,
 		),
 
 		fx.Provide( // BotEventDispatcher
 			dispatchroutes.BotEventDispatchRoutesRegistry,
-			di_bots.BotEventDispatcherProvider,
+			di_events.BotEventDispatcherProvider,
 		),
 		fx.Provide(
-			di_bots_nats.NatsBotEventJetStreamProvider,
-			di_bots_nats.NatsBotEventSubscriberProvider,
+			di_nats.NatsBotEventJetStreamProvider,
+			di_nats.NatsBotEventSubscriberProvider,
 		),
 		// Регистрируем lifecycle tracing до lifecycle подписчика.
 		// Fx запускает хуки по порядку, а останавливает в обратном порядке.
 		fx.Invoke(func(_ *tracing.Tracing) {}),
 		fx.Invoke(func(_ ports.BotEventSubscriberPort) {}),
 		// HTTP останавливается до подписчика и observability.
-		fx.Invoke(di.HTTPServerProvider),
+		fx.Invoke(di_http.HTTPServerProvider),
 	)
 
 	app.Run()
