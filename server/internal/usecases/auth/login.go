@@ -4,11 +4,13 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
 	"go.opentelemetry.io/otel"
 )
 
 type LoginUC struct {
 	Logger *slog.Logger
+	BootstrapSettings *internal.BootstrapSettings
 }
 
 func (LoginUC LoginUC) Execute(

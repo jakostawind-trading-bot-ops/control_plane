@@ -43,6 +43,10 @@
             "title": "To-Do",
             "tasks": [
                 {
+                    "text": "подключиться к pgbouncer и сделать репозиторий для хранения сессий",
+                    "id": "zv6ghoqdcmiho7ym7cuvvx9f"
+                },
+                {
                     "text": "сделать универсальные распонсы на ошибки в server/internal/transport/http/contracts",
                     "id": "qiaczllb6oar7c6u2ogp607n"
                 },
@@ -115,5 +119,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793969076986
+    "timestamp": 1793972562044
 }

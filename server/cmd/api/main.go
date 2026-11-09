@@ -8,6 +8,7 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/di"
 	di_events "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/events/bot"
 	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/observability"
+	di_storage "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/storage"
 	di_http "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/http"
 	di_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/nats"
 	di_usecases "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/usecases"
@@ -30,7 +31,8 @@ func main() {
 		fx.Provide(di_observability.LoggerProvider), // OpenTelemetry logs
 		fx.Provide(di_observability.TracerProvider), // OpenTelemetry tracing
 
-		fx.Provide(di_nats.NatsClientProvider), // NatsClient
+		fx.Provide(di_nats.NatsClientProvider),      // NatsClient
+		fx.Provide(di_storage.ValkeyClientProvider), // ValkeyClient
 
 		fx.Provide(di_http.GinProvider),
 		fx.Provide(
@@ -66,11 +68,10 @@ func main() {
 			http_routes.HTTPhandlersRegistry,
 		),
 
-
-
 		// Регистрируем lifecycle tracing до lifecycle подписчика.
 		// Fx запускает хуки по порядку, а останавливает в обратном порядке.
 		fx.Invoke(func(_ *tracing.Tracing) {}),
+		fx.Invoke(func(_ *di_storage.ValkeyClient) {}),
 		fx.Invoke(func(_ ports.BotEventSubscriberPort) {}),
 
 		fx.Invoke(http_routes.RegisterHTTPRoutes),
