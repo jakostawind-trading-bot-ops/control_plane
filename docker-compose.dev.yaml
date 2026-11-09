@@ -11,6 +11,10 @@ services:
     restart: "no"
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - dev_valkey
+      - dev_nats
 
   caddy:
     ports:
@@ -34,3 +38,9 @@ volumes:
 networks:
   default:
     name: dev_cp
+  dev_valkey:
+    external: true
+    name: dev_valkey
+  dev_nats:
+    external: true
+    name: dev_nats
