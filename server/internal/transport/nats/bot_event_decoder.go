@@ -102,7 +102,7 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 		)
 		span.RecordError(CANNOT_DECODE_CONTRACT)
 		span.SetStatus(codes.Error, CANNOT_DECODE_CONTRACT.Error())
-		return nil, DECODER_ROUTE_NOT_FOUND
+		return nil, fmt.Errorf("NatsBotEventDecoder: ошибка декодирования %q: %w", MessageType, err)
 	}
 
 	Logger.DebugContext(
