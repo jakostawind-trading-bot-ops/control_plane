@@ -6,6 +6,8 @@ type LoginRequestV1 struct {
 	Password string `json:"password"`
 }
 
+// LoginResponseV1 содержит результат входа и секретный токен сессии.
 type LoginResponseV1 struct {
-	Message string `json:"message"`
+	Message      string `json:"message"`       // Статус успешного входа.
+	SessionToken string `json:"session_token"` // Токен доступа; не предназначен для логов.
 }
