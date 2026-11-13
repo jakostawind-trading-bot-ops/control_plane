@@ -14,10 +14,13 @@ type BootstrapSettings struct {
 	ValkeyPassword  string
 	ControlUsername string
 	ControlPassword string
+
+	SessionCookieSecure bool // Флаг Secure у cookie; отключается только для локального HTTP.
 }
 
 // LoadBootstrapSettings возвращает настройки из окружения без проверки значений.
-// Отсутствующая переменная даёт пустую строку; значения секретов не логируются.
+// Отсутствующие строковые настройки остаются пустыми; секреты не логируются.
+// Secure у cookie включён по умолчанию; SESSION_COOKIE_SECURE=false отключает его.
 func LoadBootstrapSettings() BootstrapSettings {
 	return BootstrapSettings{
 		Stage:           os.Getenv("STAGE"),
@@ -30,5 +33,7 @@ func LoadBootstrapSettings() BootstrapSettings {
 		ValkeyPassword:  os.Getenv("VALKEY_PASSWORD"),
 		ControlUsername: os.Getenv("CONTROL_USERNAME"),
 		ControlPassword: os.Getenv("CONTROL_PASSWORD"),
+
+		SessionCookieSecure: os.Getenv("SESSION_COOKIE_SECURE") != "false",
 	}
 }

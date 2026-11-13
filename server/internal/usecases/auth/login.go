@@ -16,8 +16,8 @@ import (
 	"go.opentelemetry.io/otel/codes"
 )
 
-// sessionTTL ограничивает срок жизни новой сессии с момента записи в Valkey.
-const sessionTTL = 24 * time.Hour
+// SessionTTL ограничивает срок жизни сессии; HTTP использует его для cookie.
+const SessionTTL = 24 * time.Hour
 
 var (
 	INVALID_CREDENTIALS         = errors.New("LoginUC: invalid username or password")
@@ -92,7 +92,7 @@ func (LoginUC LoginUC) Execute(
 	Token := base64.RawURLEncoding.EncodeToString(TokenBytes[:])
 
 	// Этап 3: ошибка сохранения исключает успешную выдачу токена.
-	if err := LoginUC.SessionsRepo.Save(ctx, Token, User.Username, sessionTTL); err != nil {
+	if err := LoginUC.SessionsRepo.Save(ctx, Token, User.Username, SessionTTL); err != nil {
 		err = fmt.Errorf("%w: %w", SESSION_NOT_SAVED, err)
 		Logger.ErrorContext(ctx, "Ошибка сохранения сессии", "error", err)
 		span.RecordError(err)

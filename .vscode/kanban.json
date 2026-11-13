@@ -43,6 +43,10 @@
             "title": "To-Do",
             "tasks": [
                 {
+                    "text": "вынести репозитории в отдельный di",
+                    "id": "wtdlp108wxrpjta9g9qa30t4"
+                },
+                {
                     "text": "подключиться к pgbouncer и сделать репозиторий для хранения сессий",
                     "id": "zv6ghoqdcmiho7ym7cuvvx9f"
                 },
@@ -119,5 +123,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1793972562044
+    "timestamp": 1794589835429
 }

@@ -6,8 +6,7 @@ type LoginRequestV1 struct {
 	Password string `json:"password"`
 }
 
-// LoginResponseV1 содержит результат входа и секретный токен сессии.
+// LoginResponseV1 подтверждает вход; токен передаётся через HttpOnly cookie.
 type LoginResponseV1 struct {
-	Message      string `json:"message"`       // Статус успешного входа.
-	SessionToken string `json:"session_token"` // Токен доступа; не предназначен для логов.
+	Message string `json:"message"` // Статус успешного входа.
 }
