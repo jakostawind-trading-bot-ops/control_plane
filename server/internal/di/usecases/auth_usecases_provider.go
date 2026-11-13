@@ -13,7 +13,8 @@ import (
 )
 
 // LoginUCProvider собирает сценарий входа и подключает хранилище сессий.
-// lc регистрирует инициализацию; Logger используется сценарием входа;
+// lc регистрирует инициализацию; Logger используется сценарием входа
+// и репозиторием сессий;
 // BootstrapSettings содержит учётные данные; ValkeyClient владеет подключением.
 // Все зависимости должны быть ненулевыми.
 // Возвращает LoginUC, готовый к обработке запросов после успешного OnStart.
@@ -27,7 +28,9 @@ func LoginUCProvider(
 	BootstrapSettings *internal.BootstrapSettings,
 	ValkeyClient *storage_di.ValkeyClient,
 ) *auth_usecases.LoginUC {
-	SessionsRepo := &sessions_repositories.SessionsValkeyRepo{}
+	SessionsRepo := &sessions_repositories.SessionsValkeyRepo{
+		Logger: Logger.With("component", "sessions_valkey_repo"),
+	}
 
 	// Хук зависимости ValkeyClient выполняется раньше этого хука.
 	lc.Append(fx.Hook{
