@@ -1,4 +1,4 @@
-package http_auth_routes_v1
+package transport_http_routes_v1_auth
 
 import "github.com/gin-gonic/gin"
 
