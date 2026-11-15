@@ -18,9 +18,10 @@ var (
 	VALKEY_CLIENT_NOT_INITIATED = errors.New("SessionsValkeyRepo: Valkey client is not initialized")
 	INVALID_DATA_OR_TTL         = errors.New("SessionsValkeyRepo: invalid session data or TTL")
 	SESSION_NOT_SAVED           = errors.New("SessionsValkeyRepo: session not saved")
+	SESSION_NOT_LOADED          = errors.New("SessionsValkeyRepo: session not loaded")
 )
 
-// SessionsValkeyRepo сохраняет сессии в Valkey.
+// SessionsValkeyRepo сохраняет и читает сессии в Valkey.
 // DI устанавливает Client при запуске, до начала обработки HTTP-запросов.
 type SessionsValkeyRepo struct {
 	Logger *slog.Logger  // Логгер, передаваемый DI; обязателен.
@@ -77,8 +78,7 @@ func (SessionsValkeyRepo *SessionsValkeyRepo) Save(
 	}
 
 	// Этап 2: исходный токен не сохраняется; TTL назначается при записи.
-	hash := sha256.Sum256([]byte(token))
-	key := "auth:session:" + hex.EncodeToString(hash[:])
+	key := sessionKey(token)
 
 	err := SessionsValkeyRepo.Client.Do(ctx, SessionsValkeyRepo.Client.B().
 		Set().
@@ -96,4 +96,72 @@ func (SessionsValkeyRepo *SessionsValkeyRepo) Save(
 	}
 
 	return nil
+}
+
+// GetByToken возвращает имя владельца сессии без продления её TTL.
+// ctx связывает span с вызывающей операцией и отменяет запрос к Valkey.
+// token — секретный токен; пустой token даёт SESSION_NOT_FOUND.
+// Отсутствующий или истёкший ключ также даёт SESSION_NOT_FOUND.
+// Отсутствие клиента даёт VALKEY_CLIENT_NOT_INITIATED; ошибка чтения
+// или пустое имя в хранилище — SESSION_NOT_LOADED.
+// При любой ошибке возвращает пустое имя.
+//
+// Этапы:
+//  1. Проверить токен и наличие клиента.
+//  2. Прочитать имя по ключу с хешем токена.
+//  3. Разделить отсутствие сессии и сбой чтения.
+//
+// Схема:
+//
+//	token -> SHA-256 -> GET -> username
+//	                     +-- ключ отсутствует -> SESSION_NOT_FOUND
+//	                     +-- сбой / пустое имя -> SESSION_NOT_LOADED
+func (SessionsValkeyRepo *SessionsValkeyRepo) GetByToken(
+	ctx context.Context,
+	token string,
+) (string, error) {
+	Tracer := otel.Tracer(
+		"github.com/jakostawind-trading-bot-ops/control_plane/internal/repositories/sessions",
+	)
+	ctx, span := Tracer.Start(ctx, "SessionsValkeyRepo.GetByToken")
+	defer span.End()
+
+	// Этап 1: пустой токен не требует обращения к хранилищу.
+	if token == "" {
+		return "", SESSION_NOT_FOUND
+	}
+	if SessionsValkeyRepo.Client == nil {
+		span.RecordError(VALKEY_CLIENT_NOT_INITIATED)
+		span.SetStatus(codes.Error, VALKEY_CLIENT_NOT_INITIATED.Error())
+		return "", VALKEY_CLIENT_NOT_INITIATED
+	}
+
+	// Этап 2: GET учитывает истечение ключа и не обновляет TTL.
+	username, err := SessionsValkeyRepo.Client.Do(
+		ctx,
+		SessionsValkeyRepo.Client.B().Get().Key(sessionKey(token)).Build(),
+	).ToString()
+
+	// Этап 3: отсутствие сессии — ожидаемый результат, сбой чтения — ошибка.
+	if valkey.IsValkeyNil(err) {
+		return "", SESSION_NOT_FOUND
+	}
+	if err == nil && username == "" {
+		err = errors.New("session username is empty")
+	}
+	if err != nil {
+		err = fmt.Errorf("%w: %w", SESSION_NOT_LOADED, err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, SESSION_NOT_LOADED.Error())
+		return "", err
+	}
+
+	return username, nil
+}
+
+// sessionKey возвращает одинаковый ключ для записи и чтения сессии.
+// token — исходный секретный токен; в ключ попадает только его SHA-256.
+func sessionKey(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return "auth:session:" + hex.EncodeToString(hash[:])
 }
