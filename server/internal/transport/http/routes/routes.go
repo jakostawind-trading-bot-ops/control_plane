@@ -1,4 +1,4 @@
-package http_routes
+package transport_http_routes
 
 import (
 	"github.com/gin-gonic/gin"

@@ -1,4 +1,4 @@
-package auth_usecases
+package usecases_auth
 
 import (
 	"context"

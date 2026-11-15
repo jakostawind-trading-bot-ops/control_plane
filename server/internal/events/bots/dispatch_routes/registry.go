@@ -1,4 +1,4 @@
-package bot_event_dispatch_routes
+package events_bots_dispatch_routes
 
 import (
 	"log/slog"

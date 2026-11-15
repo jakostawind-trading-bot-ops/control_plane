@@ -1,4 +1,4 @@
-package bot_usecases
+package usecases_bots_lifecycle
 
 import (
 	"context"
