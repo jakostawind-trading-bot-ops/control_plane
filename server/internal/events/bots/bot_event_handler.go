@@ -1,4 +1,4 @@
-package bot_events
+package events_bot
 
 import "context"
 

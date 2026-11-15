@@ -1,4 +1,4 @@
-package observability
+package observability_tracing
 
 import (
 	"context"

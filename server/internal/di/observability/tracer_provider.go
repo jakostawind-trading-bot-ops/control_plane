@@ -1,4 +1,4 @@
-package di
+package di_observability
 
 import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"

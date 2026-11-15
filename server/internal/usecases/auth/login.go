@@ -29,7 +29,7 @@ var (
 // LoginUC проверяет учётные данные и выдаёт сохранённую сессию.
 type LoginUC struct {
 	Logger       *slog.Logger                       // Логгер без записи паролей и токенов.
-	UserRepo     repositories.UsersRepo             // Источник учётных данных.
+	UsersRepo     repositories.UsersRepo             // Источник учётных данных.
 	SessionsRepo sessions_repositories.SessionsRepo // Хранилище сессий с TTL.
 }
 
@@ -61,11 +61,11 @@ func (LoginUC LoginUC) Execute(
 	defer span.End()
 
 	// Этап 1: до успешной проверки сессия не создаётся.
-	User, err := LoginUC.UserRepo.GetUser(ctx)
+	User, err := LoginUC.UsersRepo.GetUser(ctx)
 	if err != nil {
 		err = fmt.Errorf("%w: %w", USER_NOT_LOADED, err)
 		Logger.DebugContext(
-			ctx, "Ошибка UserRepo",
+			ctx, "Ошибка UsersRepo",
 			"error", err,
 		)
 		span.RecordError(err)

@@ -1,4 +1,4 @@
-package di
+package di_transport_http
 
 import (
 	"context"
