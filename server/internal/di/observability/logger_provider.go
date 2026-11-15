@@ -1,11 +1,11 @@
-package di
+package di_observability
 
 import (
 	"log/slog"
 	"os"
 
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal"
-	"github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/logging"
+	observability_logging "github.com/jakostawind-trading-bot-ops/control_plane/internal/observability/logging"
 	"go.uber.org/fx"
 )
 
@@ -25,7 +25,7 @@ func LoggerProvider(
 	BootstrapSettings *internal.BootstrapSettings,
 ) (*slog.Logger, error) {
 	// Создаём SDK до регистрации lifecycle-хука: ошибка возвращается Fx.
-	LoggerFactory := &observability.Logger{
+	LoggerFactory := &observability_logging.Logger{
 		BootstrapSettings: *BootstrapSettings,
 	}
 	Logger, Provider, err := LoggerFactory.CreateOTelLogger(os.Stdout)

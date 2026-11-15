@@ -8,6 +8,7 @@ import (
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/di"
 	di_events "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/events/bot"
 	di_observability "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/observability"
+	di_repositories "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/repositories"
 	di_storage "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/storage"
 	di_http "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/http"
 	di_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/di/transport/nats"
@@ -41,6 +42,12 @@ func main() {
 			},
 		),
 
+		// REPOSITORIES
+		fx.Provide(
+			di_repositories.UsersRepoProvider,
+			di_repositories.SessionsRepoProvider,
+		),
+
 		// USECASES
 		fx.Provide(
 			// Bots
@@ -59,8 +66,8 @@ func main() {
 			di_events.BotEventDispatcherProvider,
 		),
 		fx.Provide(
-			di_nats.NatsBotEventJetStreamProvider,
-			di_nats.NatsBotEventSubscriberProvider,
+			di_nats.NatsBotEventJetStreamProvider, // BotEventJetStreamProvider
+			di_nats.NatsBotEventSubscriberProvider, // BotEventSubscriber
 		),
 
 		fx.Provide(

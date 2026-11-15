@@ -1,4 +1,4 @@
-package repositories
+package repositories_sessions
 
 import (
 	"context"

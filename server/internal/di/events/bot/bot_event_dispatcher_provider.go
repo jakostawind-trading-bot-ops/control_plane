@@ -1,4 +1,4 @@
-package di
+package di_events_bot
 
 import (
 	"log/slog"

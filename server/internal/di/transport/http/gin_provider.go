@@ -1,4 +1,4 @@
-package di
+package di_transport_http
 
 import "github.com/gin-gonic/gin"
 
