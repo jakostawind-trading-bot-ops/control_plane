@@ -1,3 +1,0 @@
-:80 {
-    reverse_proxy cp_server:8000
-}

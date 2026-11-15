@@ -9,8 +9,26 @@ services:
     init: true
     restart: unless-stopped
 
+  cp_client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      PROTOCOL_HEADER: x-forwarded-proto
+      HOST_HEADER: x-forwarded-host
+    expose:
+      - "3000"
+    init: true
+    restart: unless-stopped
+
   caddy:
     image: caddy:2-alpine
     depends_on:
       - cp_server
+      - cp_client
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
     restart: unless-stopped

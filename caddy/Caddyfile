@@ -1,0 +1,10 @@
+:80 {
+    @api path /api /api/*
+    handle @api {
+        reverse_proxy cp_server:8000
+    }
+
+    handle {
+        reverse_proxy cp_client:3000
+    }
+}

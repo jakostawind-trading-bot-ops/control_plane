@@ -16,11 +16,16 @@ services:
       - dev_valkey
       - dev_nats
 
-  caddy:
-    ports:
-      - "127.0.0.1:8080:80"
+  cp_client:
+    build:
+      target: dev
     volumes:
-      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - ./client:/app
+      - client_node_modules:/app/node_modules
+      - client_svelte_kit:/app/.svelte-kit
+    restart: "no"
+
+  caddy:
     restart: "no"
 
   dozzle:
@@ -34,6 +39,8 @@ services:
 
 volumes:
   dozzle_data:
+  client_node_modules:
+  client_svelte_kit:
 
 networks:
   default:
