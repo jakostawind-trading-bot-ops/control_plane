@@ -12,7 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	events "github.com/jakostawind-trading-bot-ops/control_plane/internal/events/bots"
@@ -251,7 +253,7 @@ func TestSubscriberStart(t *testing.T) {
 	s.WorkersStarted = true
 	var callback nats.MsgHandler
 	subscribeCalls := 0
-	s.Jetstream = subscriberJetStreamStub{
+	js := subscriberJetStreamStub{
 		subscribe: func(subject string, handler nats.MsgHandler, _ ...nats.SubOpt) (*nats.Subscription, error) {
 			subscribeCalls++
 			if subject != "bot.*.to.control.event.>" {
@@ -261,6 +263,7 @@ func TestSubscriberStart(t *testing.T) {
 			return wantSubscription, nil
 		},
 	}
+	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
 	for range 2 {
 		if err := s.Start(t.Context()); err != nil {
 			t.Fatal(err)
@@ -296,11 +299,12 @@ func TestSubscriberStartSubscribeError(t *testing.T) {
 	previous := &nats.Subscription{}
 	s.Subscription = previous
 	cause := errors.New("subscribe failed")
-	s.Jetstream = subscriberJetStreamStub{
+	js := subscriberJetStreamStub{
 		subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
 			return nil, cause
 		},
 	}
+	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
 	err := s.Start(t.Context())
 	if !errors.Is(err, CANNOT_SUBSCRIBE) || !errors.Is(err, cause) {
 		t.Fatalf("Start() = %v: потеряна категория или исходная причина", err)
@@ -595,5 +599,190 @@ func TestSubscriberCloseContext(t *testing.T) {
 			releaseHandler()
 			closeSubscriberForTest(t, s)
 		})
+	}
+}
+
+// TestSubscriberRunRetries проверяет повтор на том же соединении, прерывание
+// задержки при замене и выход из ожидания при Close. synctest управляет временем.
+func TestSubscriberRunRetries(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s := newSubscriberForTest()
+		s.WorkersStarted = true
+		changed := make(chan struct{})
+		var attempts atomic.Int32
+		js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+			attempts.Add(1)
+			return nil, errors.New("consumer ещё недоступен")
+		}}
+		s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, changed, nil }
+		if err := s.Run(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		if attempts.Load() != 1 {
+			t.Fatalf("попыток при запуске: %d", attempts.Load())
+		}
+		time.Sleep(3 * time.Second)
+		synctest.Wait()
+		before := attempts.Load()
+		if before < 2 {
+			t.Fatal("ошибка Subscribe не привела к повтору на том же соединении")
+		}
+		old := changed
+		changed = make(chan struct{})
+		close(old)
+		synctest.Wait()
+		if attempts.Load() != before+1 {
+			t.Fatal("замена соединения не прервала задержку")
+		}
+		closeSubscriberForTest(t, s)
+		time.Sleep(time.Minute)
+		if attempts.Load() != before+1 {
+			t.Fatal("попытка подписки после Close")
+		}
+	})
+}
+
+// TestSubscriberRunReplacesInFlight проверяет замену A на B до возврата Subscribe на A.
+// Обе подписки действительны. При привязке B старая должна быть освобождена.
+func TestSubscriberRunReplacesInFlight(t *testing.T) {
+	_, subA, _ := newSubscriberNatsConnection(t)
+	_, subB, _ := newSubscriberNatsConnection(t)
+	s := newSubscriberForTest()
+	s.WorkersStarted = true
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	a, b := make(chan struct{}), make(chan struct{})
+	activeB := make(chan struct{})
+	first := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+		close(entered)
+		<-release
+		return subA, nil
+	}}
+	second := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+		if subA.IsValid() {
+			t.Error("старая подписка ещё активна при привязке B")
+		}
+		close(activeB)
+		return subB, nil
+	}}
+	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) {
+		select {
+		case <-a:
+			return second, b, nil
+		default:
+			return first, a, nil
+		}
+	}
+	t.Cleanup(func() {
+		unblock()
+		closeSubscriberForTest(t, s)
+	})
+	if err := s.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(subscriberTestTimeout):
+		t.Fatal("первая попытка не началась")
+	}
+	close(a)
+	unblock()
+	select {
+	case <-activeB:
+	case <-time.After(subscriberTestTimeout):
+		t.Fatal("подписка на B не появилась")
+	}
+	if err := s.Start(t.Context()); err != nil {
+		t.Fatalf("повторный Start: %v", err)
+	}
+}
+
+// TestSubscriberCloseDuringBind удерживает прямой Start внутри сетевого вызова.
+// Close с истекшим сроком должен сразу вернуть управление, запретить следующий
+// Start и в фоне закрыть подписку, которую позже вернёт первая попытка.
+func TestSubscriberCloseDuringBind(t *testing.T) {
+	_, sub, _ := newSubscriberNatsConnection(t)
+	s := newSubscriberForTest()
+	s.WorkersStarted = true
+	entered, release := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(func() {
+		unblock()
+		closeSubscriberForTest(t, s)
+	})
+	js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+		close(entered)
+		<-release
+		return sub, nil
+	}}
+	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
+	started := make(chan error, 1)
+	go func() { started <- s.Start(t.Context()) }()
+	select {
+	case <-entered:
+	case <-time.After(subscriberTestTimeout):
+		t.Fatal("Bind не начался")
+	}
+	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := s.Close(expired); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close = %v", err)
+	}
+	rejected := make(chan error, 1)
+	go func() { rejected <- s.Start(t.Context()) }()
+	select {
+	case err := <-rejected:
+		if !errors.Is(err, IS_CLOSING) {
+			t.Fatalf("Start при остановке = %v", err)
+		}
+	case <-time.After(subscriberTestTimeout):
+		t.Fatal("Start при остановке заблокирован чужим Bind")
+	}
+	unblock()
+	<-started
+	closeSubscriberForTest(t, s)
+	if sub.IsValid() {
+		t.Fatal("подписка, вернувшаяся во время остановки, осталась активной")
+	}
+}
+
+// TestSubscriberRunRecoversClosedSubscription закрывает подписку на живом клиенте.
+// Цикл должен повторно привязаться к тому же поколению без сигнала провайдера.
+func TestSubscriberRunRecoversClosedSubscription(t *testing.T) {
+	conn, first, _ := newSubscriberNatsConnection(t)
+	second, err := conn.SubscribeSync("subscriber.next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSubscriberForTest()
+	s.WorkersStarted = true
+	created := make(chan *nats.Subscription, 2)
+	next := first
+	js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+		result := next
+		next = second
+		created <- result
+		return result, nil
+	}}
+	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
+	t.Cleanup(func() { closeSubscriberForTest(t, s) })
+	if err := s.Run(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []*nats.Subscription{first, second} {
+		select {
+		case got := <-created:
+			if got != want {
+				t.Fatal("неожиданная привязка")
+			}
+		case <-time.After(subscriberTestTimeout):
+			t.Fatal("подписка не появилась")
+		}
+		if want == first {
+			if err := first.Unsubscribe(); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

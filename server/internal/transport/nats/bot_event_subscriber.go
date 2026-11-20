@@ -21,7 +21,7 @@ const (
 
 // Errors
 var (
-	// NATS_NOT_CONNECTED означает, что Start вызван с nil в поле Jetstream.
+	// NATS_NOT_CONNECTED означает, что в снимке пока отсутствует JetStream.
 	NATS_NOT_CONNECTED = errors.New("NatsBotEventSubscriber: нет подключения к NATS")
 	// NATS_NOT_SUBSCRIBED объявлена для отсутствующей подписки; методы этого файла её не возвращают.
 	NATS_NOT_SUBSCRIBED = errors.New("NatsBotEventSubscriber: нет подписки на subject")
@@ -58,12 +58,12 @@ var (
 // NatsBotEventSubscriber принимает события ботов из JetStream и передаёт их
 // декодеру и диспетчеру через общий пул воркеров. Реализует BotEventSubscriberPort;
 // создаётся NatsBotEventSubscriberProvider, который задаёт зависимости, очередь
-// и адресацию, затем вызывает CreateWorkers перед Start и Close при остановке Fx.
+// и адресацию, затем вызывает CreateWorkers перед Run и Close при остановке Fx.
 // Stream и consumer должны существовать заранее: Start использует nats.Bind.
 //
 // Экземпляр нельзя копировать после начала использования mutex и WaitGroup.
-// До запуска нужны ненулевая MessagesQueue и зависимости обработки; Jetstream
-// должен быть задан к вызову Start. Конфигурацию и зависимости нельзя менять
+// До запуска нужны ненулевая MessagesQueue и зависимости обработки. Snapshot
+// возвращает JetStream для каждой попытки. Конфигурацию и зависимости нельзя менять
 // конкурентно с использующими их методами. Очередь закрывает только Close.
 // После начала Close повторный запуск этого экземпляра запрещён.
 //
@@ -80,13 +80,12 @@ var (
 type NatsBotEventSubscriber struct {
 	Logger              *slog.Logger                 // Общий JSON-логгер из DI; обязателен для lifecycle и обработки сообщений.
 	Subscription        *nats.Subscription           // Подписка, сохраняемая Start; nil до первой успешной подписки.
-	Jetstream           nats.JetStreamContext        // Клиент JetStream, предоставляемый DI перед Start; соединением владеет внешний код.
 	StreamName          string                       // Имя существующего stream для nats.Bind.
 	SubjectPrefix       string                       // Префикс с точкой в конце; допускает токены *, Start добавляет >.
 	ConsumerName        string                       // Имя существующего push consumer в StreamName.
 	NatsBotEventDecoder ports.BotEventDecoderPort    // Преобразует тип и байты сообщения во внутреннее событие.
 	BotEventDispatcher  ports.BotEventDispatcherPort // Передаёт внутреннее событие зарегистрированному обработчику.
-	LifecycleMutex      sync.Mutex                   // Сериализует Start, CreateWorkers и инициализацию остановки в Close.
+	LifecycleMutex      sync.Mutex                   // Защищает запуск воркеров и цикла, а также начало остановки.
 	WorkersWG           sync.WaitGroup               // Учитывает воркеров; Close ждёт их выхода после закрытия очереди.
 	WorkersStarted      bool                         // Под LifecycleMutex отмечает создание пула; обратно в false не сбрасывается.
 	MessageQueueMutex   sync.RWMutex                 // Защищает отправку callback в очередь от её одновременного закрытия.
@@ -95,91 +94,42 @@ type NatsBotEventSubscriber struct {
 	Closing             bool                         // Под LifecycleMutex необратимо отмечает начало Close.
 	CloseDone           chan struct{}                // Создаётся первым Close и закрывается после завершения фоновой очистки.
 	CloseErr            error                        // Ошибка Drain; читается вызовами Close после сигнала CloseDone.
+
+	Snapshot    func() (nats.JetStreamContext, <-chan struct{}, error) // Фабрика текущего клиента и канала его замены.
+	subscribeMu sync.Mutex                                             // Сериализует попытки и передачу подписки в Drain.
+	boundTo     <-chan struct{}                                        // Канал поколения Subscription под subscribeMu.
+	cancelWatch context.CancelFunc                                     // Отменяет цикл повторов при Close, под LifecycleMutex.
+	watchDone   chan struct{}                                          // Закрывается при выходе цикла; nil до Run.
 }
 
-// Start подписывается на SubjectPrefix + ">" и направляет сообщения в MessagesQueue.
-// Повторный вызов при действующей Subscription возвращает nil после проверок
-// состояния; попытки повторить неудачную подписку выполняет DI-провайдер.
-//
-// Параметры:
-//   - ctx — контекст вызывающего кода; здесь не проверяется и в Subscribe
-//     не передаётся, поэтому не отменяет подписку или отправку в очередь.
-//
-// Результаты:
-//   - error — IS_CLOSING, WORKERS_NOT_STARTED, NATS_NOT_CONNECTED либо
-//     errors.Join(CANNOT_SUBSCRIBE, err) при ошибке Subscribe; nil при успехе.
-//
-// Побочные эффекты:
-// Держит LifecycleMutex до возврата, сохраняет подписку и логирует сообщение
-// об успешном запуске. Использует существующий consumer без его создания.
-// ManualAck оставляет подтверждение HandleMessage. При заполненной очереди
-// callback блокируется с RLock до освобождения места; закрытую очередь пропускает.
-//
-// Этапы:
-//  1. Проверить состояние под LifecycleMutex и наличие действующей подписки.
-//  2. Создать подписку с callback передачи сообщений и ручным подтверждением.
-//  3. Сохранить подписку либо вернуть ошибку без её замены.
-//
-// Схема:
-//
-//	[Проверки] +-- ошибка -> error
-//	          +-- действующая подписка -> nil
-//	          +-- иначе -> [Subscribe с Bind и ManualAck] -> [сохранение] / error
-//	callback -> [RLock, очередь закрыта?] +-- да -> выход без Ack
-//	                                    +-- нет -> [отправка в очередь] -> RUnlock
-func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context) error {
+// Start синхронно привязывает подписку к текущему снимку провайдера.
+// ctx проверяется перед попыткой и используется для логов и трассировки.
+// Возвращает ошибку состояния, фабрики или Bind; действующая подписка
+// того же поколения допускает повторный вызов. Сетевой запрос ограничен
+// MaxWait фабрики, время жизни подписки заканчивается при замене или Close.
+func (s *NatsBotEventSubscriber) Start(ctx context.Context) error {
+	// Отклоняем вызов после Close, даже если предыдущий Bind ещё ждёт брокер.
+	s.LifecycleMutex.Lock()
+	err := s.startError(ctx)
+	s.LifecycleMutex.Unlock()
+	if err == nil {
+		_, _, err = s.ensureSubscription(ctx)
+	}
+	return err
+}
 
+// subscribe привязывает callback к существующему consumer через js.
+// ctx передаётся трассировке и логам. Возвращает подписку или CANNOT_SUBSCRIBE
+// с причиной ошибки брокера. Вызывающий владеет полученной подпиской.
+func (NatsBotEventSubscriber *NatsBotEventSubscriber) subscribe(ctx context.Context, js nats.JetStreamContext) (*nats.Subscription, error) {
 	Tracer := otel.Tracer(
 		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
 	)
-
 	ctx, span := Tracer.Start(ctx, "NatsBotEventSubscriber.Start")
 	defer span.End()
+	Logger := NatsBotEventSubscriber.Logger.With("operation", "start_bot_event_subscriber")
 
-	Logger := NatsBotEventSubscriber.Logger.With(
-		"operation", "start_bot_event_subscriber",
-	)
-
-	Logger.DebugContext(ctx, "Проверка состояния перед запуском подписки")
-	// Этап 1: проверки и создание подписки не должны пересекаться с началом Close.
-	NatsBotEventSubscriber.LifecycleMutex.Lock()
-	defer NatsBotEventSubscriber.LifecycleMutex.Unlock()
-
-	if NatsBotEventSubscriber.Closing {
-		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён",
-			"error", IS_CLOSING,
-		)
-		span.RecordError(IS_CLOSING)
-		span.SetStatus(codes.Error, IS_CLOSING.Error())
-		return IS_CLOSING
-	}
-	if !NatsBotEventSubscriber.WorkersStarted {
-		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён",
-			"error", WORKERS_NOT_STARTED,
-		)
-		span.RecordError(WORKERS_NOT_STARTED)
-		span.SetStatus(codes.Error, WORKERS_NOT_STARTED.Error())
-		return WORKERS_NOT_STARTED
-	}
-	if NatsBotEventSubscriber.Jetstream == nil {
-		Logger.DebugContext(
-			ctx, "Запуск подписки отклонён",
-			"error", NATS_NOT_CONNECTED,
-		)
-		span.RecordError(NATS_NOT_CONNECTED)
-		span.SetStatus(codes.Error, NATS_NOT_CONNECTED.Error())
-		return NATS_NOT_CONNECTED
-	}
-	if NatsBotEventSubscriber.Subscription != nil && NatsBotEventSubscriber.Subscription.IsValid() {
-		Logger.DebugContext(
-			ctx, "Подписка уже действует",
-		)
-		return nil
-	}
-
-	// Этап 2: callback передаёт транспортное сообщение воркерам без декодирования.
+	// Callback передаёт транспортное сообщение воркерам без декодирования.
 	Subject := NatsBotEventSubscriber.SubjectPrefix + ">"
 	Logger.DebugContext(
 		ctx, "Создание подписки JetStream",
@@ -187,7 +137,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 	)
 
 	MessageQueue := NatsBotEventSubscriber.MessagesQueue
-	Subscription, err := NatsBotEventSubscriber.Jetstream.Subscribe(
+	Subscription, err := js.Subscribe(
 		Subject,
 		func(Message *nats.Msg) {
 			// RLock удерживается и при ожидании места: Close не закроет канал под отправителем.
@@ -214,26 +164,19 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context)
 		nats.ManualAck(),
 	)
 
-	// Этап 3: неудачная попытка сохраняет состояние для повторного Start.
+	// Сохраняем категорию и исходную причину отказа брокера.
 	if err != nil {
 		err = errors.Join(CANNOT_SUBSCRIBE, err)
-		// Итоговую ошибку попытки пишет DI-провайдер, управляющий повторами.
+		// Фоновый цикл зарегистрирует задержку перед следующей попыткой.
 		Logger.DebugContext(
 			ctx, "Попытка создания подписки завершилась ошибкой",
 			"error", err,
 		)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return err
+		return nil, err
 	}
-
-	NatsBotEventSubscriber.Subscription = Subscription
-	Logger.InfoContext(
-		ctx, "Подписчик событий ботов запущен",
-		"subject", Subject,
-	)
-
-	return nil
+	return Subscription, nil
 }
 
 // HandleMessage последовательно извлекает тип, декодирует событие, вызывает
@@ -575,13 +518,13 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 //
 // Результаты:
 //   - error — CloseErr после завершения очистки: nil либо
-//     errors.Join(CLOSE_SUBSCRIPTION, err) при ошибке запуска Drain;
+//     errors.Join(CLOSE_SUBSCRIPTION, err) при ошибке запуска Drain на действующем соединении;
 //     ctx.Err(), если выбрана ветка отмены ожидания. При одновременной готовности
 //     обеих веток select результат может быть любым из этих двух.
 //
 // Побочные эффекты:
 // Отмечает Closing, создаёт CloseDone и запускает одну goroutine очистки.
-// При успешном Drain ждёт SubscriptionClosed; при ошибке сохраняет её
+// После завершения попыток ждёт закрытия подписки при Drain; ошибку Drain сохраняет
 // и продолжает закрытие очереди без этого ожидания. Под MessageQueueMutex
 // запрещает новые отправки, закрывает ненулевую очередь и ждёт всех воркеров.
 // Соединение JetStream не закрывает. Без отмены ctx ожидание может длиться
@@ -589,7 +532,7 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) CreateWorkers(
 //
 // Этапы:
 //  1. Под LifecycleMutex однократно подготовить и запустить очистку.
-//  2. В фоне вызвать Drain и при успехе дождаться закрытия подписки.
+//  2. Дождаться цикла Run и прямой попытки Start, затем выполнить Drain.
 //  3. В фоне запретить отправки и закрыть очередь под исключительной блокировкой.
 //  4. В фоне дождаться воркеров и закрыть CloseDone.
 //  5. Освободить LifecycleMutex и ждать CloseDone либо отмены ctx.
@@ -627,26 +570,36 @@ func (NatsBotEventSubscriber *NatsBotEventSubscriber) Close(
 	if !NatsBotEventSubscriber.Closing {
 		NatsBotEventSubscriber.Closing = true
 		NatsBotEventSubscriber.CloseDone = make(chan struct{})
-		Subscription := NatsBotEventSubscriber.Subscription
+		if NatsBotEventSubscriber.cancelWatch != nil {
+			NatsBotEventSubscriber.cancelWatch()
+		}
+		watchDone := NatsBotEventSubscriber.watchDone
 		MessagesQueue := NatsBotEventSubscriber.MessagesQueue
 
 		go func() {
 			// Этап 4: сигнал завершения публикует CloseErr после выхода всех воркеров.
 			defer close(NatsBotEventSubscriber.CloseDone)
 
-			// Этап 2: подписываемся на статус до Drain, чтобы дождаться окончания callback.
-			if Subscription != nil {
-				Logger.DebugContext(ctx, "Остановка приёма сообщений через Drain")
-				Closed := NatsBotEventSubscriber.Subscription.StatusChanged(nats.SubscriptionClosed)
-				if err := Subscription.Drain(); err != nil {
+			// Этап 2: дожидаемся фоновой и возможной прямой попытки Start.
+			if watchDone != nil {
+				<-watchDone
+			}
+			NatsBotEventSubscriber.subscribeMu.Lock()
+			sub := NatsBotEventSubscriber.Subscription
+			NatsBotEventSubscriber.subscribeMu.Unlock()
+			if sub != nil {
+				// При полном закрытии соединения nats.go также вызывает ClosedHandler.
+				closed := make(chan struct{})
+				signalClosed := sync.OnceFunc(func() { close(closed) })
+				sub.SetClosedHandler(func(string) { signalClosed() })
+				err := sub.Drain()
+				switch {
+				case errors.Is(err, nats.ErrConnectionClosed):
+					// У окончательно закрытого клиента доставка уже остановлена.
+				case err != nil:
 					NatsBotEventSubscriber.CloseErr = errors.Join(CLOSE_SUBSCRIPTION, err)
-					Logger.DebugContext(
-						ctx, "Drain завершился ошибкой; остановка воркеров продолжается",
-						"error", NatsBotEventSubscriber.CloseErr,
-					)
-				} else {
-					<-Closed
-					Logger.DebugContext(ctx, "Подписка JetStream закрыта")
+				case sub.IsValid():
+					<-closed
 				}
 			}
 

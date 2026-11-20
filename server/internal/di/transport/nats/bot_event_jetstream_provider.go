@@ -1,33 +1,25 @@
 package di_transport_nats
 
 import (
-	"context"
 	"time"
 
 	"github.com/nats-io/nats.go"
 )
 
-// BotEventJetStreamFactory получает JetStream после подключения NATS.
-// ctx отменяет ожидание соединения. Результат — JetStreamContext либо ошибка
-// ожидания/создания. Запросы JetStream ограничены таймаутом в три секунды.
-type BotEventJetStreamFactory func(ctx context.Context) (nats.JetStreamContext, error)
+// BotEventJetStreamFactory возвращает JetStream текущего соединения и сигнал
+// его замены. Пока соединения нет, возвращает nil и открытый канал.
+type BotEventJetStreamFactory func() (nats.JetStreamContext, <-chan struct{}, error)
 
-// NatsBotEventJetStreamProvider возвращает функцию отложенного получения
-// JetStream. NatsClient — владелец соединения, создаваемый общим провайдером.
-// Конструктор не ждёт подключения; возвращённую функцию вызывают после OnStart.
-//
-// Схема:
-//
-//	Вызов фабрики -> [WaitConnection(ctx)] -> [Conn.JetStream] -> результат
-func NatsBotEventJetStreamProvider(
-	NatsClient *NatsClient,
-) BotEventJetStreamFactory {
-	return func(ctx context.Context) (nats.JetStreamContext, error) {
-		Conn, err := NatsClient.WaitConnection(ctx)
-		if err != nil {
-			return nil, err
+// NatsBotEventJetStreamProvider связывает снимок клиента с JetStream для Bind.
+// client владеет соединением. MaxWait ограничивает запрос к брокеру, сохраняя
+// время жизни успешной подписки до явного Drain.
+func NatsBotEventJetStreamProvider(Сlient *NatsClient) BotEventJetStreamFactory {
+	return func() (nats.JetStreamContext, <-chan struct{}, error) {
+		Сonn, Сhanged := Сlient.connectionSnapshot()
+		if Сonn == nil {
+			return nil, Сhanged, nil
 		}
-		// Ограничиваем Bind-запрос, сохраняя явное закрытие через Drain.
-		return Conn.JetStream(nats.MaxWait(3 * time.Second))
+		js, err := Сonn.JetStream(nats.MaxWait(3 * time.Second))
+		return js, Сhanged, err
 	}
 }

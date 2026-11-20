@@ -67,6 +67,104 @@ func TestNATSBotEventsPipeline(t *testing.T) {
 	}
 }
 
+// TestNATSBotEventsRetryMissingConsumer проверяет повторную привязку на том же соединении.
+// t управляет моментом создания consumer после реальной ошибки Subscribe.
+//
+//	Bind -> consumer not found -> публикация -> AddConsumer -> повтор Bind -> Ack
+func TestNATSBotEventsRetryMissingConsumer(t *testing.T) {
+	h := startNATSHarness(t, nil, false)
+	ctx, cancel := context.WithTimeout(t.Context(), natsTestTimeout)
+	defer cancel()
+	// Ждём конкретную ошибку брокера, чтобы AddConsumer не опередил первую попытку.
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for !strings.Contains(h.logs.String(), nats.ErrConsumerNotFound.Error()) {
+		select {
+		case <-ctx.Done():
+			t.Fatal("подписчик не получил ошибку отсутствующего consumer")
+		case <-ticker.C:
+		}
+	}
+	subject, raw := startedMessage("bot-pending", "queued")
+	seq := h.publish(t, subject, raw)
+	h.addConsumer(t)
+	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-pending" {
+		t.Fatalf("после повторного Bind получено событие %q", got)
+	}
+	h.waitConsumer(t, "накопленное сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
+		return info.AckFloor.Stream == seq && info.NumAckPending == 0
+	})
+	if conn, err := h.client.WaitConnection(ctx); err != nil || conn != h.connection {
+		t.Fatalf("при повторе Bind изменилось соединение: %v", err)
+	}
+}
+
+// TestNATSBotEventsReconnect сохраняет привязку при reconnect того же *nats.Conn.
+// t управляет тестовым брокером. После CONNECTED ждём доставку и Ack без второго Bind.
+func TestNATSBotEventsReconnect(t *testing.T) {
+	h := newNATSHarness(t, nil)
+	connected := h.connection.StatusChanged(nats.CONNECTED)
+	defer h.connection.RemoveStatusListener(connected)
+	if err := h.connection.ForceReconnect(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-connected:
+	case <-time.After(natsTestTimeout):
+		t.Fatal("клиент не восстановил соединение")
+	}
+	subject, raw := startedMessage("bot-reconnect", "same-client")
+	seq := h.publish(t, subject, raw)
+	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-reconnect" {
+		t.Fatalf("после reconnect получено событие %q", got)
+	}
+	h.waitConsumer(t, "сообщение после reconnect подтверждено", func(info *nats.ConsumerInfo) bool {
+		return info.AckFloor.Stream == seq
+	})
+	h.stop(t)
+	if binds := strings.Count(h.logs.String(), "Подписчик событий ботов запущен"); binds != 1 {
+		t.Fatalf("успешных Bind за время жизни одного соединения: %d", binds)
+	}
+}
+
+// TestNATSBotEventsRecoverAfterConnectionReplacement проверяет восстановление доставки
+// после окончательного закрытия соединения приложения. t владеет отдельным издателем и брокером.
+//
+//	Первый Ack -> Close соединения -> публикация -> новое соединение -> второй Ack
+func TestNATSBotEventsRecoverAfterConnectionReplacement(t *testing.T) {
+	h := newNATSHarness(t, nil)
+	subject, raw := startedMessage("bot-before", "first")
+	first := h.publish(t, subject, raw)
+	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-before" {
+		t.Fatalf("до замены получено событие %q", got)
+	}
+	before := h.waitConsumer(t, "первое сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
+		return info.AckFloor.Stream == first
+	})
+
+	// Полное закрытие вынуждает провайдер создать другой *nats.Conn.
+	old := h.connection
+	old.Close()
+	subject, raw = startedMessage("bot-after", "second")
+	second := h.publish(t, subject, raw)
+	ctx, cancel := context.WithTimeout(t.Context(), natsTestTimeout)
+	defer cancel()
+	replacement, err := h.client.WaitConnection(ctx)
+	if err != nil || replacement == old {
+		t.Fatalf("провайдер не заменил соединение: %v", err)
+	}
+	h.connection = replacement // Cleanup проверит закрытие нового клиента.
+	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-after" {
+		t.Fatalf("после замены получено событие %q", got)
+	}
+	after := h.waitConsumer(t, "второе сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
+		return info.AckFloor.Stream == second && info.NumAckPending == 0
+	})
+	if !after.Created.Equal(before.Created) {
+		t.Fatal("при смене соединения пересоздан durable consumer")
+	}
+}
+
 // TestNATSBotEventsRejectInvalidMessages проверяет Term на настоящем брокере.
 // t управляет сценариями; повреждённый JSON, нарушение контракта и неизвестный тип
 // не должны доходить до handler или мешать обработке следующего корректного события.
