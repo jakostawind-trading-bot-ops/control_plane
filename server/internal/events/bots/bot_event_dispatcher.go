@@ -62,7 +62,6 @@ func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Conte
 		Logger.ErrorContext(
 			ctx, "Обработчик события не зарегистрирован",
 			"error", HANDLER_NOT_FOUND,
-			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		span.RecordError(HANDLER_NOT_FOUND)
 		span.SetStatus(codes.Error, HANDLER_NOT_FOUND.Error())
@@ -76,7 +75,6 @@ func (BotEventDispatcher *BotEventDispatcher) BotEventDispatch(ctx context.Conte
 			ctx, "Обработчик вернул ошибку",
 			"error", CANNOT_HANDLE_EVENT,
 			"cause", err,
-			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		span.RecordError(CANNOT_HANDLE_EVENT)
 		span.SetStatus(codes.Error, CANNOT_HANDLE_EVENT.Error())

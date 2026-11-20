@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	events "github.com/jakostawind-trading-bot-ops/control_plane/internal/events/bots"
 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/ports"
@@ -62,8 +61,6 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	MessageType string,
 	RawMessage []byte,
 ) (events.BaseBotEventI, error) {
-	Started := time.Now()
-
 	Logger := NatsBotEventDecoder.Logger.With(
 		"operation", "decode_bot_event",
 		"message_type", MessageType,
@@ -83,7 +80,6 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 		Logger.ErrorContext(
 			ctx, "Маршрут декодирования не найден",
 			"error", DECODER_ROUTE_NOT_FOUND,
-			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		span.RecordError(DECODER_ROUTE_NOT_FOUND)
 		span.SetStatus(codes.Error, DECODER_ROUTE_NOT_FOUND.Error())
@@ -98,7 +94,6 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 			ctx, "Контракт не декодирован",
 			"error", CANNOT_DECODE_CONTRACT,
 			"cause", botEventDecodeErrorLogValue(err),
-			"duration_ms", time.Since(Started).Milliseconds(),
 		)
 		span.RecordError(CANNOT_DECODE_CONTRACT)
 		span.SetStatus(codes.Error, CANNOT_DECODE_CONTRACT.Error())
@@ -108,7 +103,6 @@ func (NatsBotEventDecoder *NatsBotEventDecoder) BotEventDecode(
 	Logger.DebugContext(
 		ctx, "Событие декодировано",
 		"event_type", fmt.Sprintf("%T", BotEvent),
-		"duration_ms", time.Since(Started).Milliseconds(),
 	)
 	return BotEvent, nil
 }
