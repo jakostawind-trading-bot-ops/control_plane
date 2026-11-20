@@ -1,0 +1,1202 @@
+diff --git a/server/internal/di/transport/nats/bot_event_jetstream_provider.go b/server/internal/di/transport/nats/bot_event_jetstream_provider.go
+--- a/server/internal/di/transport/nats/bot_event_jetstream_provider.go
++++ b/server/internal/di/transport/nats/bot_event_jetstream_provider.go
+@@ -1,33 +1,25 @@
+ package di_transport_nats
+ 
+ import (
+-	"context"
+ 	"time"
+ 
+ 	"github.com/nats-io/nats.go"
+ )
+ 
+-// BotEventJetStreamFactory получает JetStream после подключения NATS.
+-// ctx отменяет ожидание соединения. Результат — JetStreamContext либо ошибка
+-// ожидания/создания. Запросы JetStream ограничены таймаутом в три секунды.
+-type BotEventJetStreamFactory func(ctx context.Context) (nats.JetStreamContext, error)
++// BotEventJetStreamFactory возвращает JetStream текущего соединения и сигнал
++// его замены. Пока соединения нет, возвращает nil и открытый канал.
++type BotEventJetStreamFactory func() (nats.JetStreamContext, <-chan struct{}, error)
+ 
+-// NatsBotEventJetStreamProvider возвращает функцию отложенного получения
+-// JetStream. NatsClient — владелец соединения, создаваемый общим провайдером.
+-// Конструктор не ждёт подключения; возвращённую функцию вызывают после OnStart.
+-//
+-// Схема:
+-//
+-//	Вызов фабрики -> [WaitConnection(ctx)] -> [Conn.JetStream] -> результат
+-func NatsBotEventJetStreamProvider(
+-	NatsClient *NatsClient,
+-) BotEventJetStreamFactory {
+-	return func(ctx context.Context) (nats.JetStreamContext, error) {
+-		Conn, err := NatsClient.WaitConnection(ctx)
+-		if err != nil {
+-			return nil, err
++// NatsBotEventJetStreamProvider связывает снимок клиента с JetStream для Bind.
++// client владеет соединением. MaxWait ограничивает запрос к брокеру, сохраняя
++// время жизни успешной подписки до явного Drain.
++func NatsBotEventJetStreamProvider(client *NatsClient) BotEventJetStreamFactory {
++	return func() (nats.JetStreamContext, <-chan struct{}, error) {
++		conn, changed := client.connectionSnapshot()
++		if conn == nil {
++			return nil, changed, nil
+ 		}
+-		// Ограничиваем Bind-запрос, сохраняя явное закрытие через Drain.
+-		return Conn.JetStream(nats.MaxWait(3 * time.Second))
++		js, err := conn.JetStream(nats.MaxWait(3 * time.Second))
++		return js, changed, err
+ 	}
+ }
+diff --git a/server/internal/di/transport/nats/bot_event_subscriber_provider.go b/server/internal/di/transport/nats/bot_event_subscriber_provider.go
+--- a/server/internal/di/transport/nats/bot_event_subscriber_provider.go
++++ b/server/internal/di/transport/nats/bot_event_subscriber_provider.go
+@@ -3,7 +3,6 @@
+ import (
+ 	"context"
+ 	"log/slog"
+-	"time"
+ 
+ 	"github.com/jakostawind-trading-bot-ops/control_plane/internal/ports"
+ 	bots_nats "github.com/jakostawind-trading-bot-ops/control_plane/internal/transport/nats"
+@@ -16,74 +15,16 @@
+ 	NATS_BOT_EVENT_CONSUMER       = "control_plane_bot_event_subscriber" // Существующий consumer в stream; провайдер не создаёт его.
+ 	NATS_BOT_EVENT_SUBJECT_PREFIX = "bot.*.to.control.event."            // * занимает токен ID бота; Start добавляет > для суффикса типа события.
+ 
+-	BOT_EVENT_WORKERS_COUNT = 4               // Число goroutine, обрабатывающих сообщения из общей очереди.
+-	BOT_EVENT_RETRY_DELAY   = 2 * time.Second // Пауза после ошибки получения JetStream или создания подписки.
++	BOT_EVENT_WORKERS_COUNT = 4 // Число goroutine, обрабатывающих сообщения из общей очереди.
+ )
+ 
+-// NatsBotEventSubscriberProvider собирает NATS-подписчика событий ботов
+-// и передаёт управление его запуском и остановкой lifecycle Fx.
+-// В main результат востребован через fx.Invoke, поэтому Fx вызывает провайдер
+-// и регистрирует хуки даже без прямых вызовов методов возвращённого порта.
++// NatsBotEventSubscriberProvider регистрирует в lc запуск воркеров и подписчика.
++// GetJetStream даёт снимок общего соединения. Decoder и Dispatcher обрабатывают
++// сообщения в воркерах, Logger получает ошибки повторных попыток.
++// Возвращает порт подписчика. Fx может завершить запуск до подключения NATS.
+ //
+-// Параметры:
+-//   - lc — lifecycle Fx для регистрации хуков; должен быть задан. В текущем
+-//     графе зависимостей хук остановки подписчика вызывается до хука NatsClient.
+-//   - GetJetStream — обязательная фабрика отложенного получения JetStream.
+-//     NatsBotEventJetStreamProvider ждёт общего соединения через WaitConnection;
+-//     переданный фабрике SubscribeCtx отменяет это ожидание.
+-//   - Decoder — обязательный декодер: по типу из subject преобразует байты
+-//     сообщения во внутреннее событие; вызывается воркерами подписчика.
+-//   - Dispatcher — обязательный диспетчер: передаёт внутреннее событие
+-//     зарегистрированному обработчику; вызывается после успешного декодирования.
+-//   - Logger — общий OTel-логгер из LoggerProvider для подписчика и ошибок запуска.
+-//
+-// Результаты:
+-//   - BotEventSubscriberPort — указатель на NatsBotEventSubscriber с адресацией
+-//     из констант и буфером на bots_nats.MESSAGES_QUEUE_LIMIT сообщений.
+-//     На момент возврата воркеры и подписка ещё не запущены, Jetstream не задан.
+-//
+-// Побочные эффекты и контракт:
+-// Сам провайдер создаёт очередь и регистрирует хуки, не подключаясь к NATS.
+-// Воркеры вызывают Decoder и Dispatcher конкурентно; порядок завершения
+-// обработки сообщений не гарантируется.
+-// OnStart игнорирует контекст запуска Fx: RunCtx создаётся от context.Background,
+-// а SubscribeCtx — от RunCtx. После запуска воркеров OnStart возвращает nil,
+-// не дожидаясь готовности подписки. Ошибка CreateWorkers возвращается Fx
+-// с отменой обоих контекстов; ошибки фабрики и Start логируются и повторяются
+-// без ограничения числа попыток до успеха либо отмены SubscribeCtx.
+-// После успешного Start цикл завершается и больше не наблюдает за подпиской.
+-// Start не передаёт SubscribeCtx в JetStream.Subscribe, поэтому отмена
+-// контекста не прерывает уже выполняющийся вызов Subscribe напрямую.
+-//
+-// OnStop отменяет попытки, ждёт завершения цикла и вызывает Close(ctx).
+-// Close запускает Drain подписки, закрывает очередь и ждёт воркеры; хук
+-// возвращает его результат либо ctx.Err(), если stop-контекст завершился раньше.
+-// После таймаута хука Close всё равно будет вызван, когда завершится цикл;
+-// его фоновая очистка также может продолжаться после возврата хука.
+-// При любом выходе из OnStop отменяется RunCtx, передаваемый обработке сообщений.
+-// Сама отмена RunCtx не завершает чтение очереди: воркеры выходят после её закрытия.
+-// Провайдер не закрывает общее соединение NATS; им владеет NatsClient.
+-//
+-// Этапы:
+-//  1. Создать подписчика с зависимостями и очередью, сохранить состояние хуков.
+-//  2. Зарегистрировать OnStart: создать контексты, запустить воркеры и цикл подписки.
+-//  3. В цикле получить JetStream и вызвать Start; при ошибке выдержать паузу.
+-//  4. Зарегистрировать OnStop: отменить цикл, дождаться его выхода и вызвать Close.
+-//
+-// Схема:
+-//
+-//	[Провайдер] -> [Подписчик, очередь, хуки] -> BotEventSubscriberPort
+-//	OnStart -> [RunCtx, SubscribeCtx] -> [CreateWorkers]
+-//	                                     +-- ошибка -> отмена контекстов -> error
+-//	                                     +-- успех -> [Запуск цикла в goroutine] -> nil
+-//	[Цикл] -> [GetJetStream] -> [Start]
+-//	            |                 +-- успех -> выход из цикла
+-//	            +-- ошибка -------+-- ошибка -> [Лог, пауза 2 с] -> повтор
+-//	            Отмена SubscribeCtx -> выход после текущей операции / ожидания
+-//	OnStop -> [CancelSubscribe] -> [Ожидание SubscribeDone, затем Close(ctx)]
+-//	                               +-- результат Close -> [CancelRun] -> результат
+-//	                               +-- ctx.Done -> [CancelRun] -> ctx.Err()
+-//	NATS -> [MessagesQueue] -> [Воркеры: Decoder -> Dispatcher -> Ack при успехе]
++//	OnStart -> CreateWorkers -> Run -> ожидание замен и повторов в фоне
++//	OnStop  -> Close -> Drain -> завершение воркеров -> отмена их контекста
+ func NatsBotEventSubscriberProvider(
+ 	lc fx.Lifecycle,
+ 	GetJetStream BotEventJetStreamFactory,
+@@ -99,6 +40,7 @@
+ 	)
+ 	Subscriber := &bots_nats.NatsBotEventSubscriber{
+ 		Logger:              Logger,
++		Snapshot:            GetJetStream,
+ 		StreamName:          NATS_BOT_EVENT_STREAM,
+ 		ConsumerName:        NATS_BOT_EVENT_CONSUMER,
+ 		SubjectPrefix:       NATS_BOT_EVENT_SUBJECT_PREFIX,
+@@ -106,74 +48,24 @@
+ 		BotEventDispatcher:  Dispatcher,
+ 		MessagesQueue:       make(chan *nats.Msg, bots_nats.MESSAGES_QUEUE_LIMIT),
+ 	}
+-	var CancelRun, CancelSubscribe context.CancelFunc // Устанавливаются в OnStart; разделяют отмену обработки и попыток подписки.
+-	var SubscribeDone chan struct{}                   // Закрывается при выходе цикла; исключает одновременные Start и Close в хуках.
+-
+-	// Этап 2: запуск Fx не ждёт NATS; фоновые операции живут до остановки приложения.
++	var cancelWorkers context.CancelFunc
+ 	lc.Append(fx.Hook{
+ 		OnStart: func(_ context.Context) error {
+-			RunCtx, cancelRun := context.WithCancel(context.Background())
+-			SubscribeCtx, cancelSubscribe := context.WithCancel(RunCtx)
+-			CancelRun, CancelSubscribe = cancelRun, cancelSubscribe
+-
+-			if err := Subscriber.CreateWorkers(RunCtx, BOT_EVENT_WORKERS_COUNT); err != nil {
+-				// При неуспешном OnStart Fx не вызовет этот OnStop: отменяем здесь.
+-				cancelSubscribe()
+-				cancelRun()
++			ctx, cancel := context.WithCancel(context.Background())
++			cancelWorkers = cancel
++			if err := Subscriber.CreateWorkers(ctx, BOT_EVENT_WORKERS_COUNT); err != nil {
++				cancel()
+ 				return err
+ 			}
+-
+-			// Этап 3: один цикл владеет попытками Start; очередь и воркеры сохраняются.
+-			SubscribeDone = make(chan struct{})
+-			go func() {
+-				defer close(SubscribeDone)
+-				for SubscribeCtx.Err() == nil {
+-					JetStream, err := GetJetStream(SubscribeCtx)
+-					if err == nil && SubscribeCtx.Err() == nil {
+-						// Фабрика отвечает за доступность соединения, Start — за подписку
+-						// на существующий consumer; перед Start повторно проверяем отмену.
+-						Subscriber.Jetstream = JetStream
+-						err = Subscriber.Start(SubscribeCtx)
+-					}
+-					if err == nil || SubscribeCtx.Err() != nil {
+-						return
+-					}
+-					Logger.ErrorContext(SubscribeCtx, "Подписка на события ботов не создана",
+-						"operation", "start_bot_event_subscriber", "error", err,
+-						"retry_delay_ms", BOT_EVENT_RETRY_DELAY.Milliseconds(),
+-					)
+-
+-					Timer := time.NewTimer(BOT_EVENT_RETRY_DELAY)
+-					// Пауза ограничивает частоту ошибок и прерывается остановкой без ожидания 2 с.
+-					select {
+-					case <-SubscribeCtx.Done():
+-						Timer.Stop()
+-						return
+-					case <-Timer.C:
+-					}
+-				}
+-			}()
++			if err := Subscriber.Run(ctx); err != nil {
++				cancel()
++				return err
++			}
+ 			return nil
+ 		},
+ 		OnStop: func(ctx context.Context) error {
+-			// Этап 4: сначала запрещаем новые попытки; RunCtx оставляем обработке
+-			// очереди до завершения Close либо истечения stop-контекста.
+-			CancelSubscribe()
+-			defer CancelRun()
+-
+-			// Даже при таймауте Close будет начат после завершения попытки Start.
+-			// Буфер позволяет отправить результат, если хук уже вернул ctx.Err().
+-			Stopped := make(chan error, 1)
+-			go func() {
+-				<-SubscribeDone
+-				Stopped <- Subscriber.Close(ctx)
+-			}()
+-			select {
+-			case err := <-Stopped:
+-				return err
+-			case <-ctx.Done():
+-				return ctx.Err()
+-			}
++			defer cancelWorkers()
++			return Subscriber.Close(ctx)
+ 		},
+ 	})
+ 	return Subscriber
+diff --git a/server/internal/di/transport/nats/nats_client_provider.go b/server/internal/di/transport/nats/nats_client_provider.go
+--- a/server/internal/di/transport/nats/nats_client_provider.go
++++ b/server/internal/di/transport/nats/nats_client_provider.go
+@@ -5,7 +5,7 @@
+ 	"errors"
+ 	"log"
+ 	"net/url"
+-	"sync/atomic"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/nats-io/nats.go"
+@@ -19,7 +19,7 @@
+ // при остановке. Наличие указателя natsClient не гарантирует доступность NATS:
+ // клиент может находиться в процессе переподключения.
+ // После запуска BootstrapSettings нельзя менять конкурентно с run.
+-// Экземпляр не следует копировать после начала использования atomic.Pointer.
++// Экземпляр не следует копировать после начала использования mutex.
+ // Порядок запуска и остановки задаётся lifecycle fx.
+ //
+ // Схема:
+@@ -28,7 +28,9 @@
+ //	fx.OnStop  -> cancel -> [завершение run] -> закрытие done
+ type NatsClient struct {
+ 	BootstrapSettings internal.BootstrapSettings // Копия настроек; run использует NatsUrl, NatsUser и NatsPassword.
+-	natsClient        atomic.Pointer[nats.Conn]  // Текущий клиент; nil до создания и после обработки его закрытия.
++	mu                sync.Mutex                 // Защищает пару natsClient и changed.
++	natsClient        *nats.Conn                 // Текущий клиент; nil между экземплярами соединения.
++	changed           chan struct{}              // Закрывается при следующей замене указателя.
+ 	cancel            context.CancelFunc         // Отмена run; устанавливается в OnStart, до запуска равна nil.
+ 	done              chan struct{}              // Сигнал выхода из run; создаётся в OnStart и закрывается только run.
+ }
+@@ -71,6 +73,7 @@
+ 	// Этап 1: сохраняем собственную копию значений настроек для фонового клиента.
+ 	NatsClient := &NatsClient{
+ 		BootstrapSettings: *BootstrapSettings,
++		changed:           make(chan struct{}),
+ 	}
+ 
+ 	// Этап 2: передаём управление временем жизни клиента lifecycle fx.
+@@ -127,9 +130,9 @@
+ //	     v да
+ //	[nats.Connect] -> [ошибка?]
+ //	     +-- да -> [проверка отмены, лог ошибки] -> [пауза 2 с]
+-//	     +-- нет -> [проверка отмены, Store(conn)] -> [ожидание]
+-//	                                                  +-- closed -> Store(nil) -> [пауза 2 с]
+-//	                                                  +-- отмена -> Close, Store(nil) -> выход
++//	     +-- нет -> [проверка отмены, setConnection(conn)] -> [ожидание]
++//	                                                  +-- closed -> setConnection(nil) -> [пауза 2 с]
++//	                                                  +-- отмена -> Close, setConnection(nil) -> выход
+ //	[пауза 2 с] -> [следующая попытка либо выход при отмене]
+ func (NatsClient *NatsClient) Run(ctx context.Context) {
+ 	defer close(NatsClient.done)
+@@ -182,15 +185,15 @@
+ 				conn.Close()
+ 				return
+ 			}
+-			NatsClient.natsClient.Store(conn)
++			NatsClient.setConnection(conn)
+ 			log.Printf("NATS: клиент запущен, состояние: %s", conn.Status())
+ 			select {
+ 			case <-ctx.Done():
+ 				conn.Close()
+-				NatsClient.natsClient.Store(nil)
++				NatsClient.setConnection(nil)
+ 				return
+ 			case <-closed:
+-				NatsClient.natsClient.Store(nil)
++				NatsClient.setConnection(nil)
+ 			}
+ 		}
+ 
+@@ -202,6 +205,27 @@
+ 			return
+ 		case <-timer.C:
+ 		}
++	}
++}
++
++// connectionSnapshot возвращает клиент и сигнал его замены под одной блокировкой.
++// nil-клиент означает ожидание следующего подключения. Reconnect того же клиента
++// сохраняет канал, поэтому работающая подписка восстанавливается силами nats.go.
++func (c *NatsClient) connectionSnapshot() (*nats.Conn, <-chan struct{}) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	return c.natsClient, c.changed
++}
++
++// setConnection публикует conn и будит всех читателей прежнего снимка.
++// Run передаёт nil при окончательном закрытии клиента.
++func (c *NatsClient) setConnection(conn *nats.Conn) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
++	if c.natsClient != conn {
++		c.natsClient = conn
++		close(c.changed)
++		c.changed = make(chan struct{})
+ 	}
+ }
+ 
+@@ -225,13 +249,15 @@
+ 		if err := ctx.Err(); err != nil {
+ 			return nil, err
+ 		}
+-		if Conn := NatsClient.natsClient.Load(); Conn != nil && Conn.IsConnected() {
++		Conn, changed := NatsClient.connectionSnapshot()
++		if Conn != nil && Conn.IsConnected() {
+ 			return Conn, nil
+ 		}
+ 		// Ожидание очередной проверки прерывается отменой контекста.
+ 		select {
+ 		case <-ctx.Done():
+ 			return nil, ctx.Err()
++		case <-changed:
+ 		case <-Ticker.C:
+ 		}
+ 	}
+diff --git a/server/internal/transport/nats/bot_event_subscriber.go b/server/internal/transport/nats/bot_event_subscriber.go
+--- a/server/internal/transport/nats/bot_event_subscriber.go
++++ b/server/internal/transport/nats/bot_event_subscriber.go
+@@ -21,7 +21,7 @@
+ 
+ // Errors
+ var (
+-	// NATS_NOT_CONNECTED означает, что Start вызван с nil в поле Jetstream.
++	// NATS_NOT_CONNECTED означает, что в снимке пока отсутствует JetStream.
+ 	NATS_NOT_CONNECTED = errors.New("NatsBotEventSubscriber: нет подключения к NATS")
+ 	// NATS_NOT_SUBSCRIBED объявлена для отсутствующей подписки; методы этого файла её не возвращают.
+ 	NATS_NOT_SUBSCRIBED = errors.New("NatsBotEventSubscriber: нет подписки на subject")
+@@ -58,12 +58,12 @@
+ // NatsBotEventSubscriber принимает события ботов из JetStream и передаёт их
+ // декодеру и диспетчеру через общий пул воркеров. Реализует BotEventSubscriberPort;
+ // создаётся NatsBotEventSubscriberProvider, который задаёт зависимости, очередь
+-// и адресацию, затем вызывает CreateWorkers перед Start и Close при остановке Fx.
++// и адресацию, затем вызывает CreateWorkers перед Run и Close при остановке Fx.
+ // Stream и consumer должны существовать заранее: Start использует nats.Bind.
+ //
+ // Экземпляр нельзя копировать после начала использования mutex и WaitGroup.
+-// До запуска нужны ненулевая MessagesQueue и зависимости обработки; Jetstream
+-// должен быть задан к вызову Start. Конфигурацию и зависимости нельзя менять
++// До запуска нужны ненулевая MessagesQueue и зависимости обработки. Snapshot
++// возвращает JetStream для каждой попытки. Конфигурацию и зависимости нельзя менять
+ // конкурентно с использующими их методами. Очередь закрывает только Close.
+ // После начала Close повторный запуск этого экземпляра запрещён.
+ //
+@@ -80,13 +80,12 @@
+ type NatsBotEventSubscriber struct {
+ 	Logger              *slog.Logger                 // Общий JSON-логгер из DI; обязателен для lifecycle и обработки сообщений.
+ 	Subscription        *nats.Subscription           // Подписка, сохраняемая Start; nil до первой успешной подписки.
+-	Jetstream           nats.JetStreamContext        // Клиент JetStream, предоставляемый DI перед Start; соединением владеет внешний код.
+ 	StreamName          string                       // Имя существующего stream для nats.Bind.
+ 	SubjectPrefix       string                       // Префикс с точкой в конце; допускает токены *, Start добавляет >.
+ 	ConsumerName        string                       // Имя существующего push consumer в StreamName.
+ 	NatsBotEventDecoder ports.BotEventDecoderPort    // Преобразует тип и байты сообщения во внутреннее событие.
+ 	BotEventDispatcher  ports.BotEventDispatcherPort // Передаёт внутреннее событие зарегистрированному обработчику.
+-	LifecycleMutex      sync.Mutex                   // Сериализует Start, CreateWorkers и инициализацию остановки в Close.
++	LifecycleMutex      sync.Mutex                   // Защищает запуск воркеров и цикла, а также начало остановки.
+ 	WorkersWG           sync.WaitGroup               // Учитывает воркеров; Close ждёт их выхода после закрытия очереди.
+ 	WorkersStarted      bool                         // Под LifecycleMutex отмечает создание пула; обратно в false не сбрасывается.
+ 	MessageQueueMutex   sync.RWMutex                 // Защищает отправку callback в очередь от её одновременного закрытия.
+@@ -95,91 +94,42 @@
+ 	Closing             bool                         // Под LifecycleMutex необратимо отмечает начало Close.
+ 	CloseDone           chan struct{}                // Создаётся первым Close и закрывается после завершения фоновой очистки.
+ 	CloseErr            error                        // Ошибка Drain; читается вызовами Close после сигнала CloseDone.
++
++	Snapshot    func() (nats.JetStreamContext, <-chan struct{}, error) // Фабрика текущего клиента и канала его замены.
++	subscribeMu sync.Mutex                                             // Сериализует попытки и передачу подписки в Drain.
++	boundTo     <-chan struct{}                                        // Канал поколения Subscription под subscribeMu.
++	cancelWatch context.CancelFunc                                     // Отменяет цикл повторов при Close, под LifecycleMutex.
++	watchDone   chan struct{}                                          // Закрывается при выходе цикла; nil до Run.
+ }
+ 
+-// Start подписывается на SubjectPrefix + ">" и направляет сообщения в MessagesQueue.
+-// Повторный вызов при действующей Subscription возвращает nil после проверок
+-// состояния; попытки повторить неудачную подписку выполняет DI-провайдер.
+-//
+-// Параметры:
+-//   - ctx — контекст вызывающего кода; здесь не проверяется и в Subscribe
+-//     не передаётся, поэтому не отменяет подписку или отправку в очередь.
+-//
+-// Результаты:
+-//   - error — IS_CLOSING, WORKERS_NOT_STARTED, NATS_NOT_CONNECTED либо
+-//     errors.Join(CANNOT_SUBSCRIBE, err) при ошибке Subscribe; nil при успехе.
+-//
+-// Побочные эффекты:
+-// Держит LifecycleMutex до возврата, сохраняет подписку и логирует сообщение
+-// об успешном запуске. Использует существующий consumer без его создания.
+-// ManualAck оставляет подтверждение HandleMessage. При заполненной очереди
+-// callback блокируется с RLock до освобождения места; закрытую очередь пропускает.
+-//
+-// Этапы:
+-//  1. Проверить состояние под LifecycleMutex и наличие действующей подписки.
+-//  2. Создать подписку с callback передачи сообщений и ручным подтверждением.
+-//  3. Сохранить подписку либо вернуть ошибку без её замены.
+-//
+-// Схема:
+-//
+-//	[Проверки] +-- ошибка -> error
+-//	          +-- действующая подписка -> nil
+-//	          +-- иначе -> [Subscribe с Bind и ManualAck] -> [сохранение] / error
+-//	callback -> [RLock, очередь закрыта?] +-- да -> выход без Ack
+-//	                                    +-- нет -> [отправка в очередь] -> RUnlock
+-func (NatsBotEventSubscriber *NatsBotEventSubscriber) Start(ctx context.Context) error {
+-
++// Start синхронно привязывает подписку к текущему снимку провайдера.
++// ctx проверяется перед попыткой и используется для логов и трассировки.
++// Возвращает ошибку состояния, фабрики или Bind; действующая подписка
++// того же поколения допускает повторный вызов. Сетевой запрос ограничен
++// MaxWait фабрики, время жизни подписки заканчивается при замене или Close.
++func (s *NatsBotEventSubscriber) Start(ctx context.Context) error {
++	// Отклоняем вызов после Close, даже если предыдущий Bind ещё ждёт брокер.
++	s.LifecycleMutex.Lock()
++	err := s.startError(ctx)
++	s.LifecycleMutex.Unlock()
++	if err == nil {
++		_, _, err = s.ensureSubscription(ctx)
++	}
++	return err
++}
++
++// subscribe привязывает callback к существующему consumer через js.
++// ctx передаётся трассировке и логам. Возвращает подписку или CANNOT_SUBSCRIBE
++// с причиной ошибки брокера. Вызывающий владеет полученной подпиской.
++func (NatsBotEventSubscriber *NatsBotEventSubscriber) subscribe(ctx context.Context, js nats.JetStreamContext) (*nats.Subscription, error) {
+ 	Tracer := otel.Tracer(
+ 		"github.com/jakostawind-trading-bot-ops/control_plane/internal/modules/bots/nats",
+ 	)
+-
+ 	ctx, span := Tracer.Start(ctx, "NatsBotEventSubscriber.Start")
+ 	defer span.End()
+-
+-	Logger := NatsBotEventSubscriber.Logger.With(
+-		"operation", "start_bot_event_subscriber",
+-	)
+-
+-	Logger.DebugContext(ctx, "Проверка состояния перед запуском подписки")
+-	// Этап 1: проверки и создание подписки не должны пересекаться с началом Close.
+-	NatsBotEventSubscriber.LifecycleMutex.Lock()
+-	defer NatsBotEventSubscriber.LifecycleMutex.Unlock()
+-
+-	if NatsBotEventSubscriber.Closing {
+-		Logger.DebugContext(
+-			ctx, "Запуск подписки отклонён",
+-			"error", IS_CLOSING,
+-		)
+-		span.RecordError(IS_CLOSING)
+-		span.SetStatus(codes.Error, IS_CLOSING.Error())
+-		return IS_CLOSING
+-	}
+-	if !NatsBotEventSubscriber.WorkersStarted {
+-		Logger.DebugContext(
+-			ctx, "Запуск подписки отклонён",
+-			"error", WORKERS_NOT_STARTED,
+-		)
+-		span.RecordError(WORKERS_NOT_STARTED)
+-		span.SetStatus(codes.Error, WORKERS_NOT_STARTED.Error())
+-		return WORKERS_NOT_STARTED
+-	}
+-	if NatsBotEventSubscriber.Jetstream == nil {
+-		Logger.DebugContext(
+-			ctx, "Запуск подписки отклонён",
+-			"error", NATS_NOT_CONNECTED,
+-		)
+-		span.RecordError(NATS_NOT_CONNECTED)
+-		span.SetStatus(codes.Error, NATS_NOT_CONNECTED.Error())
+-		return NATS_NOT_CONNECTED
+-	}
+-	if NatsBotEventSubscriber.Subscription != nil && NatsBotEventSubscriber.Subscription.IsValid() {
+-		Logger.DebugContext(
+-			ctx, "Подписка уже действует",
+-		)
+-		return nil
+-	}
+-
+-	// Этап 2: callback передаёт транспортное сообщение воркерам без декодирования.
++	Logger := NatsBotEventSubscriber.Logger.With("operation", "start_bot_event_subscriber")
++
++	// Callback передаёт транспортное сообщение воркерам без декодирования.
+ 	Subject := NatsBotEventSubscriber.SubjectPrefix + ">"
+ 	Logger.DebugContext(
+ 		ctx, "Создание подписки JetStream",
+@@ -187,7 +137,7 @@
+ 	)
+ 
+ 	MessageQueue := NatsBotEventSubscriber.MessagesQueue
+-	Subscription, err := NatsBotEventSubscriber.Jetstream.Subscribe(
++	Subscription, err := js.Subscribe(
+ 		Subject,
+ 		func(Message *nats.Msg) {
+ 			// RLock удерживается и при ожидании места: Close не закроет канал под отправителем.
+@@ -214,26 +164,19 @@
+ 		nats.ManualAck(),
+ 	)
+ 
+-	// Этап 3: неудачная попытка сохраняет состояние для повторного Start.
++	// Сохраняем категорию и исходную причину отказа брокера.
+ 	if err != nil {
+ 		err = errors.Join(CANNOT_SUBSCRIBE, err)
+-		// Итоговую ошибку попытки пишет DI-провайдер, управляющий повторами.
++		// Фоновый цикл зарегистрирует задержку перед следующей попыткой.
+ 		Logger.DebugContext(
+ 			ctx, "Попытка создания подписки завершилась ошибкой",
+ 			"error", err,
+ 		)
+ 		span.RecordError(err)
+ 		span.SetStatus(codes.Error, err.Error())
+-		return err
+-	}
+-
+-	NatsBotEventSubscriber.Subscription = Subscription
+-	Logger.InfoContext(
+-		ctx, "Подписчик событий ботов запущен",
+-		"subject", Subject,
+-	)
+-
+-	return nil
++		return nil, err
++	}
++	return Subscription, nil
+ }
+ 
+ // HandleMessage последовательно извлекает тип, декодирует событие, вызывает
+@@ -575,13 +518,13 @@
+ //
+ // Результаты:
+ //   - error — CloseErr после завершения очистки: nil либо
+-//     errors.Join(CLOSE_SUBSCRIPTION, err) при ошибке запуска Drain;
++//     errors.Join(CLOSE_SUBSCRIPTION, err) при ошибке запуска Drain на действующем соединении;
+ //     ctx.Err(), если выбрана ветка отмены ожидания. При одновременной готовности
+ //     обеих веток select результат может быть любым из этих двух.
+ //
+ // Побочные эффекты:
+ // Отмечает Closing, создаёт CloseDone и запускает одну goroutine очистки.
+-// При успешном Drain ждёт SubscriptionClosed; при ошибке сохраняет её
++// После завершения попыток ждёт закрытия подписки при Drain; ошибку Drain сохраняет
+ // и продолжает закрытие очереди без этого ожидания. Под MessageQueueMutex
+ // запрещает новые отправки, закрывает ненулевую очередь и ждёт всех воркеров.
+ // Соединение JetStream не закрывает. Без отмены ctx ожидание может длиться
+@@ -589,7 +532,7 @@
+ //
+ // Этапы:
+ //  1. Под LifecycleMutex однократно подготовить и запустить очистку.
+-//  2. В фоне вызвать Drain и при успехе дождаться закрытия подписки.
++//  2. Дождаться цикла Run и прямой попытки Start, затем выполнить Drain.
+ //  3. В фоне запретить отправки и закрыть очередь под исключительной блокировкой.
+ //  4. В фоне дождаться воркеров и закрыть CloseDone.
+ //  5. Освободить LifecycleMutex и ждать CloseDone либо отмены ctx.
+@@ -627,26 +570,36 @@
+ 	if !NatsBotEventSubscriber.Closing {
+ 		NatsBotEventSubscriber.Closing = true
+ 		NatsBotEventSubscriber.CloseDone = make(chan struct{})
+-		Subscription := NatsBotEventSubscriber.Subscription
++		if NatsBotEventSubscriber.cancelWatch != nil {
++			NatsBotEventSubscriber.cancelWatch()
++		}
++		watchDone := NatsBotEventSubscriber.watchDone
+ 		MessagesQueue := NatsBotEventSubscriber.MessagesQueue
+ 
+ 		go func() {
+ 			// Этап 4: сигнал завершения публикует CloseErr после выхода всех воркеров.
+ 			defer close(NatsBotEventSubscriber.CloseDone)
+ 
+-			// Этап 2: подписываемся на статус до Drain, чтобы дождаться окончания callback.
+-			if Subscription != nil {
+-				Logger.DebugContext(ctx, "Остановка приёма сообщений через Drain")
+-				Closed := NatsBotEventSubscriber.Subscription.StatusChanged(nats.SubscriptionClosed)
+-				if err := Subscription.Drain(); err != nil {
++			// Этап 2: дожидаемся фоновой и возможной прямой попытки Start.
++			if watchDone != nil {
++				<-watchDone
++			}
++			NatsBotEventSubscriber.subscribeMu.Lock()
++			sub := NatsBotEventSubscriber.Subscription
++			NatsBotEventSubscriber.subscribeMu.Unlock()
++			if sub != nil {
++				// При полном закрытии соединения nats.go также вызывает ClosedHandler.
++				closed := make(chan struct{})
++				signalClosed := sync.OnceFunc(func() { close(closed) })
++				sub.SetClosedHandler(func(string) { signalClosed() })
++				err := sub.Drain()
++				switch {
++				case errors.Is(err, nats.ErrConnectionClosed):
++					// У окончательно закрытого клиента доставка уже остановлена.
++				case err != nil:
+ 					NatsBotEventSubscriber.CloseErr = errors.Join(CLOSE_SUBSCRIPTION, err)
+-					Logger.DebugContext(
+-						ctx, "Drain завершился ошибкой; остановка воркеров продолжается",
+-						"error", NatsBotEventSubscriber.CloseErr,
+-					)
+-				} else {
+-					<-Closed
+-					Logger.DebugContext(ctx, "Подписка JetStream закрыта")
++				case sub.IsValid():
++					<-closed
+ 				}
+ 			}
+ 
+diff --git a/server/internal/transport/nats/bot_event_subscriber_test.go b/server/internal/transport/nats/bot_event_subscriber_test.go
+--- a/server/internal/transport/nats/bot_event_subscriber_test.go
++++ b/server/internal/transport/nats/bot_event_subscriber_test.go
+@@ -12,7 +12,9 @@
+ 	"strconv"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"testing"
++	"testing/synctest"
+ 	"time"
+ 
+ 	events "github.com/jakostawind-trading-bot-ops/control_plane/internal/events/bots"
+@@ -251,7 +253,7 @@
+ 	s.WorkersStarted = true
+ 	var callback nats.MsgHandler
+ 	subscribeCalls := 0
+-	s.Jetstream = subscriberJetStreamStub{
++	js := subscriberJetStreamStub{
+ 		subscribe: func(subject string, handler nats.MsgHandler, _ ...nats.SubOpt) (*nats.Subscription, error) {
+ 			subscribeCalls++
+ 			if subject != "bot.*.to.control.event.>" {
+@@ -261,6 +263,7 @@
+ 			return wantSubscription, nil
+ 		},
+ 	}
++	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
+ 	for range 2 {
+ 		if err := s.Start(t.Context()); err != nil {
+ 			t.Fatal(err)
+@@ -296,11 +299,12 @@
+ 	previous := &nats.Subscription{}
+ 	s.Subscription = previous
+ 	cause := errors.New("subscribe failed")
+-	s.Jetstream = subscriberJetStreamStub{
++	js := subscriberJetStreamStub{
+ 		subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
+ 			return nil, cause
+ 		},
+ 	}
++	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
+ 	err := s.Start(t.Context())
+ 	if !errors.Is(err, CANNOT_SUBSCRIBE) || !errors.Is(err, cause) {
+ 		t.Fatalf("Start() = %v: потеряна категория или исходная причина", err)
+@@ -597,3 +601,188 @@
+ 		})
+ 	}
+ }
++
++// TestSubscriberRunRetries проверяет повтор на том же соединении, прерывание
++// задержки при замене и выход из ожидания при Close. synctest управляет временем.
++func TestSubscriberRunRetries(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		s := newSubscriberForTest()
++		s.WorkersStarted = true
++		changed := make(chan struct{})
++		var attempts atomic.Int32
++		js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
++			attempts.Add(1)
++			return nil, errors.New("consumer ещё недоступен")
++		}}
++		s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, changed, nil }
++		if err := s.Run(t.Context()); err != nil {
++			t.Fatal(err)
++		}
++		synctest.Wait()
++		if attempts.Load() != 1 {
++			t.Fatalf("попыток при запуске: %d", attempts.Load())
++		}
++		time.Sleep(3 * time.Second)
++		synctest.Wait()
++		before := attempts.Load()
++		if before < 2 {
++			t.Fatal("ошибка Subscribe не привела к повтору на том же соединении")
++		}
++		old := changed
++		changed = make(chan struct{})
++		close(old)
++		synctest.Wait()
++		if attempts.Load() != before+1 {
++			t.Fatal("замена соединения не прервала задержку")
++		}
++		closeSubscriberForTest(t, s)
++		time.Sleep(time.Minute)
++		if attempts.Load() != before+1 {
++			t.Fatal("попытка подписки после Close")
++		}
++	})
++}
++
++// TestSubscriberRunReplacesInFlight проверяет замену A на B до возврата Subscribe на A.
++// Обе подписки действительны. При привязке B старая должна быть освобождена.
++func TestSubscriberRunReplacesInFlight(t *testing.T) {
++	_, subA, _ := newSubscriberNatsConnection(t)
++	_, subB, _ := newSubscriberNatsConnection(t)
++	s := newSubscriberForTest()
++	s.WorkersStarted = true
++	entered, release := make(chan struct{}), make(chan struct{})
++	unblock := sync.OnceFunc(func() { close(release) })
++	a, b := make(chan struct{}), make(chan struct{})
++	activeB := make(chan struct{})
++	first := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
++		close(entered)
++		<-release
++		return subA, nil
++	}}
++	second := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
++		if subA.IsValid() {
++			t.Error("старая подписка ещё активна при привязке B")
++		}
++		close(activeB)
++		return subB, nil
++	}}
++	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) {
++		select {
++		case <-a:
++			return second, b, nil
++		default:
++			return first, a, nil
++		}
++	}
++	t.Cleanup(func() {
++		unblock()
++		closeSubscriberForTest(t, s)
++	})
++	if err := s.Run(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case <-entered:
++	case <-time.After(subscriberTestTimeout):
++		t.Fatal("первая попытка не началась")
++	}
++	close(a)
++	unblock()
++	select {
++	case <-activeB:
++	case <-time.After(subscriberTestTimeout):
++		t.Fatal("подписка на B не появилась")
++	}
++	if err := s.Start(t.Context()); err != nil {
++		t.Fatalf("повторный Start: %v", err)
++	}
++}
++
++// TestSubscriberCloseDuringBind удерживает прямой Start внутри сетевого вызова.
++// Close с истекшим сроком должен сразу вернуть управление, запретить следующий
++// Start и в фоне закрыть подписку, которую позже вернёт первая попытка.
++func TestSubscriberCloseDuringBind(t *testing.T) {
++	_, sub, _ := newSubscriberNatsConnection(t)
++	s := newSubscriberForTest()
++	s.WorkersStarted = true
++	entered, release := make(chan struct{}), make(chan struct{})
++	unblock := sync.OnceFunc(func() { close(release) })
++	t.Cleanup(func() {
++		unblock()
++		closeSubscriberForTest(t, s)
++	})
++	js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
++		close(entered)
++		<-release
++		return sub, nil
++	}}
++	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
++	started := make(chan error, 1)
++	go func() { started <- s.Start(t.Context()) }()
++	select {
++	case <-entered:
++	case <-time.After(subscriberTestTimeout):
++		t.Fatal("Bind не начался")
++	}
++	expired, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
++	defer cancel()
++	if err := s.Close(expired); !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Close = %v", err)
++	}
++	rejected := make(chan error, 1)
++	go func() { rejected <- s.Start(t.Context()) }()
++	select {
++	case err := <-rejected:
++		if !errors.Is(err, IS_CLOSING) {
++			t.Fatalf("Start при остановке = %v", err)
++		}
++	case <-time.After(subscriberTestTimeout):
++		t.Fatal("Start при остановке заблокирован чужим Bind")
++	}
++	unblock()
++	<-started
++	closeSubscriberForTest(t, s)
++	if sub.IsValid() {
++		t.Fatal("подписка, вернувшаяся во время остановки, осталась активной")
++	}
++}
++
++// TestSubscriberRunRecoversClosedSubscription закрывает подписку на живом клиенте.
++// Цикл должен повторно привязаться к тому же поколению без сигнала провайдера.
++func TestSubscriberRunRecoversClosedSubscription(t *testing.T) {
++	conn, first, _ := newSubscriberNatsConnection(t)
++	second, err := conn.SubscribeSync("subscriber.next")
++	if err != nil {
++		t.Fatal(err)
++	}
++	s := newSubscriberForTest()
++	s.WorkersStarted = true
++	created := make(chan *nats.Subscription, 2)
++	next := first
++	js := subscriberJetStreamStub{subscribe: func(string, nats.MsgHandler, ...nats.SubOpt) (*nats.Subscription, error) {
++		result := next
++		next = second
++		created <- result
++		return result, nil
++	}}
++	s.Snapshot = func() (nats.JetStreamContext, <-chan struct{}, error) { return js, nil, nil }
++	t.Cleanup(func() { closeSubscriberForTest(t, s) })
++	if err := s.Run(t.Context()); err != nil {
++		t.Fatal(err)
++	}
++	for _, want := range []*nats.Subscription{first, second} {
++		select {
++		case got := <-created:
++			if got != want {
++				t.Fatal("неожиданная привязка")
++			}
++		case <-time.After(subscriberTestTimeout):
++			t.Fatal("подписка не появилась")
++		}
++		if want == first {
++			if err := first.Unsubscribe(); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++}
+diff --git a/server/internal/transport/nats/bot_event_subscription.go b/server/internal/transport/nats/bot_event_subscription.go
+new file mode 100644
+--- /dev/null
++++ b/server/internal/transport/nats/bot_event_subscription.go
+@@ -0,0 +1,145 @@
++package nats
++
++import (
++	"context"
++	"errors"
++	"math/rand/v2"
++	"time"
++
++	"github.com/nats-io/nats.go"
++)
++
++// Run запускает один фоновый цикл после CreateWorkers и сразу возвращает управление.
++// ctx ограничивает время наблюдения. Close отменяет цикл и ждёт завершения попытки
++// перед Drain. Повторный Run действующего экземпляра идемпотентен.
++func (s *NatsBotEventSubscriber) Run(ctx context.Context) error {
++	s.LifecycleMutex.Lock()
++	defer s.LifecycleMutex.Unlock()
++	if err := s.startError(ctx); err != nil {
++		return err
++	}
++	if s.watchDone == nil {
++		ctx, s.cancelWatch = context.WithCancel(ctx)
++		s.watchDone = make(chan struct{})
++		go func() {
++			defer close(s.watchDone)
++			s.watch(ctx)
++		}()
++	}
++	return nil
++}
++
++// startError проверяет право начать попытку в ctx. Вызывается под LifecycleMutex.
++func (s *NatsBotEventSubscriber) startError(ctx context.Context) error {
++	if s.Closing {
++		return IS_CLOSING
++	}
++	if !s.WorkersStarted {
++		return WORKERS_NOT_STARTED
++	}
++	return ctx.Err()
++}
++
++// watch поддерживает одну подписку, пока активен ctx. Таймер нужен только после
++// ошибки. Смена соединения прерывает задержку, закрытие подписки вызывает новый Bind.
++//
++//	снимок -> нет клиента -> ждать замены
++//	       -> Bind -> ошибка -> ждать замены или таймера
++//	               -> успех -> ждать замены или закрытия подписки
++func (s *NatsBotEventSubscriber) watch(ctx context.Context) {
++	const firstDelay, maxDelay = 2 * time.Second, 30 * time.Second
++	delay := firstDelay
++	for ctx.Err() == nil {
++		sub, changed, err := s.ensureSubscription(ctx)
++		if ctx.Err() != nil || errors.Is(err, IS_CLOSING) {
++			return
++		}
++		var closed <-chan nats.SubStatus
++		var retry <-chan time.Time
++		switch {
++		case err == nil:
++			closed = sub.StatusChanged(nats.SubscriptionClosed)
++			delay = firstDelay
++		case errors.Is(err, NATS_NOT_CONNECTED), errors.Is(err, errConnectionChanged):
++			// Ждём появления клиента; при устаревшем Bind канал уже закрыт.
++		default:
++			// Небольшой разброс распределяет запросы нескольких экземпляров.
++			wait := delay - time.Duration(rand.Int64N(int64(delay/4)))
++			s.Logger.WarnContext(ctx, "Не удалось подписаться на события ботов",
++				"error", err, "retry_after", wait)
++			retry = time.After(wait)
++			delay = min(2*delay, maxDelay)
++		}
++		select {
++		case <-ctx.Done():
++			return
++		case <-changed:
++			delay = firstDelay
++		case <-closed:
++		case <-retry:
++		}
++	}
++}
++
++// ensureSubscription сериализует Run и прямые Start. Возвращает действующую
++// подписку либо ошибку и канал замены снимка для следующего ожидания. ctx
++// проверяется перед попыткой; сетевой Bind выполняется без LifecycleMutex.
++//
++//	снимок -> снять прежнюю привязку -> Bind -> проверить поколение
++func (s *NatsBotEventSubscriber) ensureSubscription(ctx context.Context) (*nats.Subscription, <-chan struct{}, error) {
++	s.subscribeMu.Lock()
++	defer s.subscribeMu.Unlock()
++	s.LifecycleMutex.Lock()
++	err := s.startError(ctx)
++	s.LifecycleMutex.Unlock()
++	if err != nil {
++		return nil, nil, err
++	}
++	if s.Snapshot == nil {
++		return nil, nil, NATS_NOT_CONNECTED
++	}
++	js, changed, err := s.Snapshot()
++	if s.Subscription != nil && s.boundTo != changed {
++		if detachErr := s.detach(); detachErr != nil {
++			return nil, changed, detachErr
++		}
++	}
++	if err != nil {
++		return nil, changed, err
++	}
++	if js == nil {
++		return nil, changed, NATS_NOT_CONNECTED
++	}
++	if s.Subscription.IsValid() {
++		return s.Subscription, changed, nil
++	}
++
++	sub, err := s.subscribe(ctx, js)
++	if err != nil {
++		return nil, changed, err
++	}
++	s.Subscription, s.boundTo = sub, changed
++	select {
++	case <-changed:
++		// Даже успешный Bind мог завершиться уже после замены клиента.
++		return nil, changed, errors.Join(errConnectionChanged, s.detach())
++	default:
++		s.Logger.InfoContext(ctx, "Подписчик событий ботов запущен", "subject", sub.Subject)
++		return sub, changed, nil
++	}
++}
++
++// errConnectionChanged сообщает прямому Start, что результат привязки устарел.
++var errConnectionChanged = errors.New("соединение NATS заменено во время подписки")
++
++// detach снимает привязку к старому соединению под subscribeMu. При ошибке
++// сохраняет ещё действующую подписку для повтора. Bind сохраняет durable consumer.
++func (s *NatsBotEventSubscriber) detach() error {
++	if s.Subscription.IsValid() {
++		if err := s.Subscription.Unsubscribe(); err != nil && s.Subscription.IsValid() {
++			return err
++		}
++	}
++	s.Subscription, s.boundTo = nil, nil
++	return nil
++}
+diff --git a/server/tests/integration/nats_helpers_test.go b/server/tests/integration/nats_helpers_test.go
+--- a/server/tests/integration/nats_helpers_test.go
++++ b/server/tests/integration/nats_helpers_test.go
+@@ -153,20 +153,27 @@
+ 	}
+ }
+ 
+-// newNATSHarness собирает реальную NATS-цепочку приложения через провайдеры из main.
+-// t владеет ресурсами; before необязателен и вызывается перед настоящим обработчиком
+-// для управляемой ошибки или блокировки. Возвращает запущенное приложение с подпиской.
++// newNATSHarness возвращает запущенное приложение с привязанным consumer.
++// t владеет стендом, before может заблокировать обработчик или вернуть ошибку.
++func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
++	t.Helper()
++	return startNATSHarness(t, before, true)
++}
++
++// startNATSHarness собирает реальную NATS-цепочку приложения через провайдеры из main.
++// t владеет ресурсами, before вызывается перед настоящим обработчиком. С readyConsumer
++// функция создаёт consumer и ждёт привязки, иначе возвращает приложение после подключения.
+ //
+ // Этапы:
+-//  1. Подготовить брокер, независимого издателя и существующий push consumer.
++//  1. Подготовить брокер, независимого издателя и, при readyConsumer, push consumer.
+ //  2. Собрать Fx, обернув только handler для наблюдения результатов.
+-//  3. Запустить lifecycle и дождаться фактической привязки consumer.
++//  3. Запустить lifecycle и, при readyConsumer, дождаться фактической привязки.
+ //
+ // Схема:
+ //
+-//	[Брокер, stream, consumer] -> [Fx.Start] -> [WaitConnection, PushBound]
++//	[Брокер, stream] -> [AddConsumer?] -> [Fx.Start] -> [WaitConnection] -> [PushBound?]
+ //	[Dispatcher] -> [before?] -> [настоящий handler/use case] -> handled
+-func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
++func startNATSHarness(t *testing.T, before eventHandlerFunc, readyConsumer bool) *natsHarness {
+ 	t.Helper()
+ 	// Этап 1: Bind в production не создаёт инфраструктуру, её подготавливает fixture.
+ 	settings := startNATSBroker(t)
+@@ -187,12 +194,8 @@
+ 	}); err != nil {
+ 		t.Fatalf("AddStream: %v", err)
+ 	}
+-	if _, err := h.jetstream.AddConsumer(di_nats.NATS_BOT_EVENT_STREAM, &nats.ConsumerConfig{
+-		Durable: di_nats.NATS_BOT_EVENT_CONSUMER, DeliverSubject: "integration.bot.events",
+-		FilterSubject: "bot.*.to.control.event.>", AckPolicy: nats.AckExplicitPolicy,
+-		AckWait: natsAckWait, MaxDeliver: 5, MaxAckPending: 128,
+-	}); err != nil {
+-		t.Fatalf("AddConsumer: %v", err)
++	if readyConsumer {
++		h.addConsumer(t)
+ 	}
+ 
+ 	// Этап 2: реальные registry, decoder, dispatcher, handler и use case остаются в графе.
+@@ -255,8 +258,22 @@
+ 	if err != nil {
+ 		t.Fatalf("WaitConnection: %v", err)
+ 	}
+-	h.waitConsumer(t, "подписка готова", func(info *nats.ConsumerInfo) bool { return info.PushBound })
++	if readyConsumer {
++		h.waitConsumer(t, "подписка готова", func(info *nats.ConsumerInfo) bool { return info.PushBound })
++	}
+ 	return h
++}
++
++// addConsumer создаёт durable push consumer тестового стенда, t получает ошибку брокера.
++func (h *natsHarness) addConsumer(t *testing.T) {
++	t.Helper()
++	if _, err := h.jetstream.AddConsumer(di_nats.NATS_BOT_EVENT_STREAM, &nats.ConsumerConfig{
++		Durable: di_nats.NATS_BOT_EVENT_CONSUMER, DeliverSubject: "integration.bot.events",
++		FilterSubject: "bot.*.to.control.event.>", AckPolicy: nats.AckExplicitPolicy,
++		AckWait: natsAckWait, MaxDeliver: 5, MaxAckPending: 128,
++	}); err != nil {
++		t.Fatalf("AddConsumer: %v", err)
++	}
+ }
+ 
+ // waitConsumer опрашивает состояние consumer до выполнения ready.
+diff --git a/server/tests/integration/nats_test.go b/server/tests/integration/nats_test.go
+--- a/server/tests/integration/nats_test.go
++++ b/server/tests/integration/nats_test.go
+@@ -64,6 +64,104 @@
+ 	case extra := <-h.handled:
+ 		t.Fatalf("повторная обработка подтверждённого сообщения: %+v", extra)
+ 	default:
++	}
++}
++
++// TestNATSBotEventsRetryMissingConsumer проверяет повторную привязку на том же соединении.
++// t управляет моментом создания consumer после реальной ошибки Subscribe.
++//
++//	Bind -> consumer not found -> публикация -> AddConsumer -> повтор Bind -> Ack
++func TestNATSBotEventsRetryMissingConsumer(t *testing.T) {
++	h := startNATSHarness(t, nil, false)
++	ctx, cancel := context.WithTimeout(t.Context(), natsTestTimeout)
++	defer cancel()
++	// Ждём конкретную ошибку брокера, чтобы AddConsumer не опередил первую попытку.
++	ticker := time.NewTicker(20 * time.Millisecond)
++	defer ticker.Stop()
++	for !strings.Contains(h.logs.String(), nats.ErrConsumerNotFound.Error()) {
++		select {
++		case <-ctx.Done():
++			t.Fatal("подписчик не получил ошибку отсутствующего consumer")
++		case <-ticker.C:
++		}
++	}
++	subject, raw := startedMessage("bot-pending", "queued")
++	seq := h.publish(t, subject, raw)
++	h.addConsumer(t)
++	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-pending" {
++		t.Fatalf("после повторного Bind получено событие %q", got)
++	}
++	h.waitConsumer(t, "накопленное сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
++		return info.AckFloor.Stream == seq && info.NumAckPending == 0
++	})
++	if conn, err := h.client.WaitConnection(ctx); err != nil || conn != h.connection {
++		t.Fatalf("при повторе Bind изменилось соединение: %v", err)
++	}
++}
++
++// TestNATSBotEventsReconnect сохраняет привязку при reconnect того же *nats.Conn.
++// t управляет тестовым брокером. После CONNECTED ждём доставку и Ack без второго Bind.
++func TestNATSBotEventsReconnect(t *testing.T) {
++	h := newNATSHarness(t, nil)
++	connected := h.connection.StatusChanged(nats.CONNECTED)
++	defer h.connection.RemoveStatusListener(connected)
++	if err := h.connection.ForceReconnect(); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case <-connected:
++	case <-time.After(natsTestTimeout):
++		t.Fatal("клиент не восстановил соединение")
++	}
++	subject, raw := startedMessage("bot-reconnect", "same-client")
++	seq := h.publish(t, subject, raw)
++	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-reconnect" {
++		t.Fatalf("после reconnect получено событие %q", got)
++	}
++	h.waitConsumer(t, "сообщение после reconnect подтверждено", func(info *nats.ConsumerInfo) bool {
++		return info.AckFloor.Stream == seq
++	})
++	h.stop(t)
++	if binds := strings.Count(h.logs.String(), "Подписчик событий ботов запущен"); binds != 1 {
++		t.Fatalf("успешных Bind за время жизни одного соединения: %d", binds)
++	}
++}
++
++// TestNATSBotEventsRecoverAfterConnectionReplacement проверяет восстановление доставки
++// после окончательного закрытия соединения приложения. t владеет отдельным издателем и брокером.
++//
++//	Первый Ack -> Close соединения -> публикация -> новое соединение -> второй Ack
++func TestNATSBotEventsRecoverAfterConnectionReplacement(t *testing.T) {
++	h := newNATSHarness(t, nil)
++	subject, raw := startedMessage("bot-before", "first")
++	first := h.publish(t, subject, raw)
++	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-before" {
++		t.Fatalf("до замены получено событие %q", got)
++	}
++	before := h.waitConsumer(t, "первое сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
++		return info.AckFloor.Stream == first
++	})
++
++	// Полное закрытие вынуждает провайдер создать другой *nats.Conn.
++	old := h.connection
++	old.Close()
++	subject, raw = startedMessage("bot-after", "second")
++	second := h.publish(t, subject, raw)
++	ctx, cancel := context.WithTimeout(t.Context(), natsTestTimeout)
++	defer cancel()
++	replacement, err := h.client.WaitConnection(ctx)
++	if err != nil || replacement == old {
++		t.Fatalf("провайдер не заменил соединение: %v", err)
++	}
++	h.connection = replacement // Cleanup проверит закрытие нового клиента.
++	if got := h.receiveEvent(t).IsBaseBotEvent().BotID; got != "bot-after" {
++		t.Fatalf("после замены получено событие %q", got)
++	}
++	after := h.waitConsumer(t, "второе сообщение подтверждено", func(info *nats.ConsumerInfo) bool {
++		return info.AckFloor.Stream == second && info.NumAckPending == 0
++	})
++	if !after.Created.Equal(before.Created) {
++		t.Fatal("при смене соединения пересоздан durable consumer")
+ 	}
+ }
+ 

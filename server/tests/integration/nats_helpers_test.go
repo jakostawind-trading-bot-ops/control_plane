@@ -153,20 +153,27 @@ func startNATSBroker(t *testing.T) *internal.BootstrapSettings {
 	}
 }
 
-// newNATSHarness собирает реальную NATS-цепочку приложения через провайдеры из main.
-// t владеет ресурсами; before необязателен и вызывается перед настоящим обработчиком
-// для управляемой ошибки или блокировки. Возвращает запущенное приложение с подпиской.
+// newNATSHarness возвращает запущенное приложение с привязанным consumer.
+// t владеет стендом, before может заблокировать обработчик или вернуть ошибку.
+func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
+	t.Helper()
+	return startNATSHarness(t, before, true)
+}
+
+// startNATSHarness собирает реальную NATS-цепочку приложения через провайдеры из main.
+// t владеет ресурсами, before вызывается перед настоящим обработчиком. С readyConsumer
+// функция создаёт consumer и ждёт привязки, иначе возвращает приложение после подключения.
 //
 // Этапы:
-//  1. Подготовить брокер, независимого издателя и существующий push consumer.
+//  1. Подготовить брокер, независимого издателя и, при readyConsumer, push consumer.
 //  2. Собрать Fx, обернув только handler для наблюдения результатов.
-//  3. Запустить lifecycle и дождаться фактической привязки consumer.
+//  3. Запустить lifecycle и, при readyConsumer, дождаться фактической привязки.
 //
 // Схема:
 //
-//	[Брокер, stream, consumer] -> [Fx.Start] -> [WaitConnection, PushBound]
+//	[Брокер, stream] -> [AddConsumer?] -> [Fx.Start] -> [WaitConnection] -> [PushBound?]
 //	[Dispatcher] -> [before?] -> [настоящий handler/use case] -> handled
-func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
+func startNATSHarness(t *testing.T, before eventHandlerFunc, readyConsumer bool) *natsHarness {
 	t.Helper()
 	// Этап 1: Bind в production не создаёт инфраструктуру, её подготавливает fixture.
 	settings := startNATSBroker(t)
@@ -187,12 +194,8 @@ func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
 	}); err != nil {
 		t.Fatalf("AddStream: %v", err)
 	}
-	if _, err := h.jetstream.AddConsumer(di_nats.NATS_BOT_EVENT_STREAM, &nats.ConsumerConfig{
-		Durable: di_nats.NATS_BOT_EVENT_CONSUMER, DeliverSubject: "integration.bot.events",
-		FilterSubject: "bot.*.to.control.event.>", AckPolicy: nats.AckExplicitPolicy,
-		AckWait: natsAckWait, MaxDeliver: 5, MaxAckPending: 128,
-	}); err != nil {
-		t.Fatalf("AddConsumer: %v", err)
+	if readyConsumer {
+		h.addConsumer(t)
 	}
 
 	// Этап 2: реальные registry, decoder, dispatcher, handler и use case остаются в графе.
@@ -255,8 +258,22 @@ func newNATSHarness(t *testing.T, before eventHandlerFunc) *natsHarness {
 	if err != nil {
 		t.Fatalf("WaitConnection: %v", err)
 	}
-	h.waitConsumer(t, "подписка готова", func(info *nats.ConsumerInfo) bool { return info.PushBound })
+	if readyConsumer {
+		h.waitConsumer(t, "подписка готова", func(info *nats.ConsumerInfo) bool { return info.PushBound })
+	}
 	return h
+}
+
+// addConsumer создаёт durable push consumer тестового стенда, t получает ошибку брокера.
+func (h *natsHarness) addConsumer(t *testing.T) {
+	t.Helper()
+	if _, err := h.jetstream.AddConsumer(di_nats.NATS_BOT_EVENT_STREAM, &nats.ConsumerConfig{
+		Durable: di_nats.NATS_BOT_EVENT_CONSUMER, DeliverSubject: "integration.bot.events",
+		FilterSubject: "bot.*.to.control.event.>", AckPolicy: nats.AckExplicitPolicy,
+		AckWait: natsAckWait, MaxDeliver: 5, MaxAckPending: 128,
+	}); err != nil {
+		t.Fatalf("AddConsumer: %v", err)
+	}
 }
 
 // waitConsumer опрашивает состояние consumer до выполнения ready.

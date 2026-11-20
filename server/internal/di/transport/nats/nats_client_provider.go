@@ -5,7 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/url"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -19,7 +19,7 @@ import (
 // при остановке. Наличие указателя natsClient не гарантирует доступность NATS:
 // клиент может находиться в процессе переподключения.
 // После запуска BootstrapSettings нельзя менять конкурентно с run.
-// Экземпляр не следует копировать после начала использования atomic.Pointer.
+// Экземпляр не следует копировать после начала использования mutex.
 // Порядок запуска и остановки задаётся lifecycle fx.
 //
 // Схема:
@@ -28,7 +28,9 @@ import (
 //	fx.OnStop  -> cancel -> [завершение run] -> закрытие done
 type NatsClient struct {
 	BootstrapSettings internal.BootstrapSettings // Копия настроек; run использует NatsUrl, NatsUser и NatsPassword.
-	natsClient        atomic.Pointer[nats.Conn]  // Текущий клиент; nil до создания и после обработки его закрытия.
+	mu                sync.Mutex                 // Защищает пару natsClient и changed.
+	natsClient        *nats.Conn                 // Текущий клиент; nil между экземплярами соединения.
+	changed           chan struct{}              // Закрывается при следующей замене указателя.
 	cancel            context.CancelFunc         // Отмена run; устанавливается в OnStart, до запуска равна nil.
 	done              chan struct{}              // Сигнал выхода из run; создаётся в OnStart и закрывается только run.
 }
@@ -71,6 +73,7 @@ func NatsClientProvider(
 	// Этап 1: сохраняем собственную копию значений настроек для фонового клиента.
 	NatsClient := &NatsClient{
 		BootstrapSettings: *BootstrapSettings,
+		changed:           make(chan struct{}),
 	}
 
 	// Этап 2: передаём управление временем жизни клиента lifecycle fx.
@@ -127,9 +130,9 @@ func NatsClientProvider(
 //	     v да
 //	[nats.Connect] -> [ошибка?]
 //	     +-- да -> [проверка отмены, лог ошибки] -> [пауза 2 с]
-//	     +-- нет -> [проверка отмены, Store(conn)] -> [ожидание]
-//	                                                  +-- closed -> Store(nil) -> [пауза 2 с]
-//	                                                  +-- отмена -> Close, Store(nil) -> выход
+//	     +-- нет -> [проверка отмены, setConnection(conn)] -> [ожидание]
+//	                                                  +-- closed -> setConnection(nil) -> [пауза 2 с]
+//	                                                  +-- отмена -> Close, setConnection(nil) -> выход
 //	[пауза 2 с] -> [следующая попытка либо выход при отмене]
 func (NatsClient *NatsClient) Run(ctx context.Context) {
 	defer close(NatsClient.done)
@@ -182,15 +185,15 @@ func (NatsClient *NatsClient) Run(ctx context.Context) {
 				conn.Close()
 				return
 			}
-			NatsClient.natsClient.Store(conn)
+			NatsClient.setConnection(conn)
 			log.Printf("NATS: клиент запущен, состояние: %s", conn.Status())
 			select {
 			case <-ctx.Done():
 				conn.Close()
-				NatsClient.natsClient.Store(nil)
+				NatsClient.setConnection(nil)
 				return
 			case <-closed:
-				NatsClient.natsClient.Store(nil)
+				NatsClient.setConnection(nil)
 			}
 		}
 
@@ -202,6 +205,27 @@ func (NatsClient *NatsClient) Run(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+// connectionSnapshot возвращает клиент и сигнал его замены под одной блокировкой.
+// nil-клиент означает ожидание следующего подключения. Reconnect того же клиента
+// сохраняет канал, поэтому работающая подписка восстанавливается силами nats.go.
+func (c *NatsClient) connectionSnapshot() (*nats.Conn, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.natsClient, c.changed
+}
+
+// setConnection публикует conn и будит всех читателей прежнего снимка.
+// Run передаёт nil при окончательном закрытии клиента.
+func (c *NatsClient) setConnection(conn *nats.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.natsClient != conn {
+		c.natsClient = conn
+		close(c.changed)
+		c.changed = make(chan struct{})
 	}
 }
 
@@ -225,13 +249,15 @@ func (NatsClient *NatsClient) WaitConnection(ctx context.Context) (*nats.Conn, e
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if Conn := NatsClient.natsClient.Load(); Conn != nil && Conn.IsConnected() {
+		Conn, changed := NatsClient.connectionSnapshot()
+		if Conn != nil && Conn.IsConnected() {
 			return Conn, nil
 		}
 		// Ожидание очередной проверки прерывается отменой контекста.
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-changed:
 		case <-Ticker.C:
 		}
 	}
