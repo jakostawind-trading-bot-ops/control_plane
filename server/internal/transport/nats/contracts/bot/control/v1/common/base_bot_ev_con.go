@@ -1,4 +1,4 @@
-package nats_contracts_v1
+package transport_nats_contracts_bot_control_v1_common
 
 import (
 	"fmt"
