@@ -1,6 +1,10 @@
 package internal
 
-import "os"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
 
 // BootstrapSettings содержит настройки запуска из переменных окружения.
 type BootstrapSettings struct {
@@ -18,11 +22,12 @@ type BootstrapSettings struct {
 	SessionCookieSecure bool // Флаг Secure у cookie; отключается только для локального HTTP.
 }
 
-// LoadBootstrapSettings возвращает настройки из окружения без проверки значений.
-// Отсутствующие строковые настройки остаются пустыми; секреты не логируются.
+// LoadBootstrapSettings читает окружение перед запуском Fx. Если обязательная
+// переменная пуста или содержит только пробельные символы, функция возвращает
+// нулевые настройки и ошибку с именем переменной.
 // Secure у cookie включён по умолчанию; SESSION_COOKIE_SECURE=false отключает его.
-func LoadBootstrapSettings() BootstrapSettings {
-	return BootstrapSettings{
+func LoadBootstrapSettings() (BootstrapSettings, error) {
+	settings := BootstrapSettings{
 		Stage:           os.Getenv("STAGE"),
 		LoggerLevel:     os.Getenv("LOGGER_LEVEL"),
 		NatsUrl:         os.Getenv("NATS_URL"),
@@ -36,4 +41,18 @@ func LoadBootstrapSettings() BootstrapSettings {
 
 		SessionCookieSecure: os.Getenv("SESSION_COOKIE_SECURE") != "false",
 	}
+
+	for _, field := range []struct{ name, value string }{
+		{"NATS_URL", settings.NatsUrl},
+		{"LOGGER_LEVEL", settings.LoggerLevel},
+		{"VALKEY_HOST", settings.ValkeyHost},
+		{"VALKEY_PORT", settings.ValkeyPort},
+		{"CONTROL_USERNAME", settings.ControlUsername},
+		{"CONTROL_PASSWORD", settings.ControlPassword},
+	} {
+		if strings.TrimSpace(field.value) == "" {
+			return BootstrapSettings{}, fmt.Errorf("обязательная переменная %s не задана", field.name)
+		}
+	}
+	return settings, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -24,7 +25,10 @@ import (
 
 // main собирает зависимости и передаёт запуск и остановку компонентов Fx.
 func main() {
-	bootstrap_settings := internal.LoadBootstrapSettings()
+	bootstrap_settings, err := internal.LoadBootstrapSettings()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	app := fx.New(
 		di.BootstrapSettingsProvider(&bootstrap_settings), // Настройки запуска

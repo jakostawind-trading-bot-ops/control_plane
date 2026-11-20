@@ -4,6 +4,18 @@ services:
       context: ./server
       dockerfile: Dockerfile
       target: runtime
+    environment:
+      - STAGE
+      - LOGGER_LEVEL
+      - NATS_URL
+      - NATS_USER
+      - NATS_PASSWORD
+      - VALKEY_HOST
+      - VALKEY_PORT
+      - VALKEY_PASSWORD
+      - CONTROL_USERNAME
+      - CONTROL_PASSWORD
+      - SESSION_COOKIE_SECURE
     expose:
       - "8000"
     init: true

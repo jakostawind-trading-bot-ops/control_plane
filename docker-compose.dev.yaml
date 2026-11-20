@@ -4,6 +4,8 @@ services:
   cp_server:
     build:
       target: dev
+    # В dev все настройки сервера берутся из server/.env.dev.
+    environment: !reset {}
     env_file:
       - ./server/.env.dev
     volumes:

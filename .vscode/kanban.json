@@ -5,40 +5,12 @@
             "title": "Bugs",
             "tasks": [
                 {
-                    "text": "Высокий приоритет. Восстановить подписку при замене соединения NATS.\nserver/internal/di/transport/nats/bot_event_subscriber_provider.go:131–139 и server/internal/di/transport/nats/bot_event_jetstream_provider.go:25–31. После успешного Start цикл завершается. Если NatsClient.Run создаст новый *nats.Conn после окончательного закрытия старого, фабрику JetStream больше никто не вызовет. Процесс продолжит работу, но перестанет принимать события ботов. Отслеживать замену соединения и повторять Bind на новом клиенте. Обычный reconnect внутри того же *nats.Conn библиотека обслуживает сама.",
+                    "text": "4. NatsClient.Run может создать новый *nats.Conn после окончательного закрытия предыдущего. Существующие JetStream и подписка автоматически на новый объект не переключатся. Обычное переподключение внутри того же *nats.Conn — другой случай.\n",
                     "id": "yht1cfxg1jopwxvuxupenqfz"
                 },
                 {
-                    "text": "Высокий приоритет. Восстановить подписку при пересоздании consumer на работающем соединении.\nserver/internal/di/transport/nats/bot_event_subscriber_provider.go:136–152. Первоначально неудачный Subscribe уже повторяется с паузой 2 с. После первого успеха цикл выходит. Если durable consumer пересоздадут с другим DeliverSubject, локальная подписка останется на старом subject и воркеры перестанут получать события. Для восстановления проверить фактический DeliverSubject и заменить устаревшую подписку. Проверка одной лишь Subscription.IsValid() в server/internal/transport/nats/bot_event_subscriber.go:180–185 пропустит этот случай.",
+                    "text": " после неудачного Subscribe подписка сама не появится. Нужен фоновый механизм повторов, который также узнаёт о замене соединения в провайдере.",
                     "id": "sc2fujmhoekgo4u8m5sdqj0t"
-                },
-                {
-                    "text": "Высокий приоритет. При привязке к существующему consumer требовать AckExplicit.\nserver/internal/di/transport/nats/bot_event_subscriber_provider.go:15–19, 119 и server/internal/transport/nats/bot_event_subscriber.go:220–221. Четыре воркера подтверждают сообщения независимо. ManualAck отключает автоматический Ack в клиенте, но допускает consumer с политикой AckAll. Если обработка первого сообщения завершится ошибкой, а второй воркер подтвердит следующее, брокер засчитает оба сообщения и больше не доставит первое этому consumer. Добавить nats.AckExplicit() к параметрам Bind, чтобы несовместимая конфигурация обнаруживалась при подписке.",
-                    "id": "j2w7k4t9f6m3q8v5r1x0b4nd"
-                },
-                {
-                    "text": "Высокий приоритет. Отклонять маршрут декодера с незаполненными обязательными полями при сборке Fx.\nserver/internal/di/transport/nats/bot_event_decoder_provider.go:16–24. Если в реестре появится маршрут с заданным MessageType и nil в Decode, сервис запустится. Первое сообщение этого типа вызовет панику в воркере и завершит процесс (server/internal/transport/nats/bot_event_decoder.go:95). Маршрут с пустым MessageType тоже принимается, хотя подписчик не выдаёт пустой тип. Проверять оба поля в провайдере и возвращать ошибку до запуска воркеров. Текущий маршрут BotStarted заполнен корректно.",
-                    "id": "kf5v8b2c6p9m1h4r7z3t0xdq"
-                },
-                {
-                    "text": "Средний приоритет. Отклонять повторную регистрацию одного MessageType.\nserver/internal/di/transport/nats/bot_event_decoder_provider.go:18–20. Если два маршрута получат один ключ, последний молча заменит первый. Сообщение попадёт в чужой декодер. Если тот отвергнет корректное для первого маршрута сообщение, подписчик отправит Term и брокер прекратит повторную доставку этому consumer (server/internal/transport/nats/bot_event_subscriber.go:330–352). Проверять уникальность ключа и возвращать Fx ошибку с конфликтующим типом. Сейчас в реестре один маршрут.",
-                    "id": "g7b2m8z4q1x5r3f6p9v0c2hd"
-                },
-                {
-                    "text": "Средний приоритет. Учесть отмену запуска Fx при подключении к Valkey.\nserver/internal/di/storage/valkey_client_provider.go:45–63. OnStart передаёт ctx только в PING. До него valkey.NewClient уже открывает соединение и выполняет сетевую инициализацию со своими таймаутами. Если контекст запуска отменится во время подключения, App.Start может уже вернуть ошибку, пока хук продолжает ждать сеть. Ограничить начальное подключение оставшимся временем запуска и предусмотреть освобождение клиента, созданного после отмены.",
-                    "id": "v4d8q3n7c1z5g9r2p6t0f4mh"
-                },
-                {
-                    "text": "Средний приоритет. Отключить неиспользуемый клиентский кеш Valkey для репозитория сессий.\nserver/internal/di/storage/valkey_client_provider.go:51–58. При настройках по умолчанию valkey-go запрашивает CLIENT TRACKING во время подключения. Если ACL разрешает операции сессий и PING, но запрещает CLIENT TRACKING, NewClient вернёт ошибку и Fx прервёт запуск всего сервера. Репозиторий выполняет GET и SET через обычный Do (server/internal/repositories/sessions/valkey.go:83, 140). Для этого клиента задать DisableCache: true.",
-                    "id": "r3s7k1m5q9v2x6b0d4f8h2nt"
-                },
-                {
-                    "text": "Средний приоритет. Прерывать запрос привязки к JetStream при остановке Fx.\nserver/internal/di/transport/nats/bot_event_jetstream_provider.go:25–31 и server/internal/di/transport/nats/bot_event_subscriber_provider.go:135–136, 158–175. Контекст прерывает WaitConnection, но запрос сведений о consumer внутри Subscribe использует отдельный таймаут 3 с. Если остановка начнётся во время этого запроса и оставшийся срок Stop короче, OnStop вернёт ошибку по дедлайну до вызова Close. Остановка подписки и воркеров начнётся позже. Сделать ожидание ответа о consumer отменяемым, сохранив Drain для уже действующей подписки.",
-                    "id": "p4m8x2r6k0v3d7c1q5f9h2ns"
-                },
-                {
-                    "text": "Средний приоритет. Создавать состояние подписчика заново при повторном запуске того же fx.App.\nserver/internal/di/transport/nats/bot_event_subscriber_provider.go:100–119, 167–169. Очередь и подписчик создаются один раз в конструкторе. Первый Stop закрывает очередь и устанавливает Closing. При последовательности Start → Stop → Start на том же приложении CreateWorkers возвращает IS_CLOSING и повторный запуск Fx срывается до создания подписки. Привязать очередь и состояние воркеров к одному циклу Start/Stop. Перезапуск процесса создаёт новый экземпляр приложения.",
-                    "id": "x6d2k9v4m1p7c0q5f8r3h6nt"
                 }
             ],
             "id": "gj1tb4yyedsn73h7is81a4vd",
@@ -54,10 +26,6 @@
                 {
                     "text": "6. Средний приоритет: две команды Makefile используют несуществующий сервис.\n   В Makefile:5 (Makefile:5) задан SERVICE ?= control_plane_server, а Compose объявляет cp_server. Поэтому make dev-logs и make dev-shell без переопределения SERVICE не работают. Исправление — согласовать название.",
                     "id": "tuw18feal807hxxy8916o14n"
-                },
-                {
-                    "text": "5. Средний приоритет: настройки запуска не проверяются.\n   LoadBootstrapSettings:12 (server/internal/bootstrtap_settings.go:12) принимает пустые значения. При отсутствующем NATS_URL клиент использует localhost, скрывая причину ошибки конфигурации. В базовом docker-compose.yaml:2 (docker-compose.yaml:2) переменные вообще не передаются — они настроены только в dev override. Нужно валидировать обязательные настройки до подключения и определить конфигурацию обычного запуска.",
-                    "id": "jn5l7nq1ry3pny9gmfbgbe6d"
                 },
                 {
                     "text": "- Продолжение trace отправителя отсутствует. Из NATS-заголовков не извлекается OpenTelemetry-контекст. Если бот передаёт traceparent/tracestate, сервер пока их игнорирует. Это отдельный механизм от ручного логирования заголовков.",
@@ -104,6 +72,10 @@
         {
             "title": "Done",
             "tasks": [
+                {
+                    "text": "5. Средний приоритет: настройки запуска не проверяются.\n   LoadBootstrapSettings:12 (server/internal/bootstrtap_settings.go:12) принимает пустые значения. При отсутствующем NATS_URL клиент использует localhost, скрывая причину ошибки конфигурации. В базовом docker-compose.yaml:2 (docker-compose.yaml:2) переменные вообще не передаются — они настроены только в dev override. Нужно валидировать обязательные настройки до подключения и определить конфигурацию обычного запуска.",
+                    "id": "jn5l7nq1ry3pny9gmfbgbe6d"
+                },
                 {
                     "text": "вынести репозитории в отдельный di",
                     "id": "wtdlp108wxrpjta9g9qa30t4"
@@ -155,5 +127,5 @@
     ],
     "autosave": true,
     "saveToFile": true,
-    "timestamp": 1795177052385
+    "timestamp": 1795184865083
 }
